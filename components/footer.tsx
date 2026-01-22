@@ -18,7 +18,9 @@ export default function Footer() {
     e.preventDefault();
     
     if (!email) {
-      toast.error("Please enter your email address");
+      toast.error("Email Required", {
+        description: "Please enter your email address to subscribe.",
+      });
       return;
     }
 
@@ -36,14 +38,20 @@ export default function Footer() {
       const data = await response.json();
 
       if (response.ok) {
-        toast.success(data.message || "Successfully subscribed to newsletter!");
+        toast.success("Successfully Subscribed!", {
+          description: data.message || "Thank you for subscribing to our newsletter.",
+        });
         setEmail("");
       } else {
-        toast.error(data.error || "Failed to subscribe. Please try again.");
+        toast.error("Subscription Failed", {
+          description: data.error || "Failed to subscribe. Please try again.",
+        });
       }
     } catch (error) {
       console.error("Newsletter subscription error:", error);
-      toast.error("An unexpected error occurred. Please try again later.");
+      toast.error("Something Went Wrong", {
+        description: "An unexpected error occurred. Please try again later.",
+      });
     } finally {
       setIsLoading(false);
     }

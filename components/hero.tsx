@@ -7,9 +7,9 @@ import { ArrowRight } from "lucide-react";
 
 export function Hero() {
   // const words = ["designs", "structures", "spaces","layouts", "models"];
-  const words = ["Stop Drafting, Start Designing", "Design at the Speed of Thought"];
+  const words = ["Design at the Speed of Thought", "Leave the Drafting to us"];
   return (
-    <div className="relative flex h-screen w-full flex-col items-center justify-center overflow-hidden">
+    <div className="relative flex h-screen w-full flex-col items-center justify-center overflow-hidden -mt-24 pt-24">
       <BackgroundRippleEffect />
       <div className="relative z-10 w-full px-4">
         <h1 className="mx-auto max-w-7xl text-center text-4xl font-bold text-neutral-800 md:text-6xl lg:text-7xl dark:text-neutral-100 md:whitespace-nowrap">
@@ -18,7 +18,8 @@ export function Hero() {
           <FlipWords words={words} className="font-bold text-center" />
         </h1>
         <p className="relative z-10 mx-auto mt-8 max-w-2xl text-center text-lg text-neutral-700 md:text-xl dark:text-neutral-400">
-          From natural language to intelligent CAD—automating architectural drawings, 3D models, and spatial design.
+          Datum is the AI copilot that automates 60% of your repitative drawing task.
+          From generating base plans to MEP systems, turn your natural language prompts into contruction-ready drawings in minutes, not days.
         </p>
         <div className="mt-8 flex justify-center">
           <HoverBorderGradient

@@ -22,7 +22,7 @@ export const BackgroundRippleEffect = ({
     <div
       ref={ref}
       className={cn(
-        "absolute inset-0 h-full w-full",
+        "absolute inset-0 h-full w-full -top-24",
         "[--cell-border-color:rgb(59_130_246_/_0.1)] [--cell-fill-color:transparent] [--cell-shadow-color:rgb(59_130_246_/_0.3)]",
         "dark:[--cell-border-color:rgb(59_130_246_/_0.15)] dark:[--cell-fill-color:transparent] dark:[--cell-shadow-color:rgb(59_130_246_/_0.4)]",
       )}
@@ -113,7 +113,7 @@ const DivGrid = ({
           <div
             key={idx}
             className={cn(
-              "cell relative border-[0.5px] opacity-60 transition-all duration-300 will-change-transform rotate-20 hover:opacity-100 hover:bg-blue-500/20 hover:border-blue-400/40 hover:shadow-[0_0_20px_rgba(59,130,246,0.4)] dark:hover:shadow-[0_0_30px_rgba(59,130,246,0.5)]",
+              "cell relative border-[0.5px] dark:opacity-60 opacity-80 transition-all duration-300 will-change-transform rotate-20 hover:opacity-100 hover:bg-blue-500/20 hover:border-blue-400/40 hover:shadow-[0_0_20px_rgba(59,130,246,0.4)] dark:hover:shadow-[0_0_30px_rgba(59,130,246,0.5)]",
               clickedCell && "animate-cell-ripple [animation-fill-mode:none]",
               !interactive && "pointer-events-none",
             )}

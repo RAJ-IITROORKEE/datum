@@ -5,6 +5,8 @@ import { ThemeProvider } from "next-themes";
 import { ClerkProvider } from "@clerk/nextjs";
 import { dark, neobrutalism } from "@clerk/themes";
 import { config } from "@/lib/config";
+import { Toaster } from "@/components/ui/sonner";
+import UserSync from "@/components/user-sync";
  
 //roboto opensans font
 
@@ -22,6 +24,9 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: config.app.name,
   description: config.app.description,
+  icons: {
+    icon: '/fav.png',
+  },
 };
 
 export default function RootLayout({
@@ -83,7 +88,9 @@ export default function RootLayout({
       <html lang="en" suppressHydrationWarning>
         <body className={`${geistSans.variable} ${geistMono.variable} antialiased`} suppressHydrationWarning>
           <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+            <UserSync />
             {children}
+            <Toaster />
           </ThemeProvider>
         </body>
       </html>

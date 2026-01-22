@@ -32,8 +32,8 @@ const data = {
   teams: [
     {
       name: `${config.app.name} Admin`,
-      logo: GalleryVerticalEnd,
-      plan: "Enterprise",
+      logo: '/datum_logo.png',
+      plan: "AI Automation",
     },
   ],
   navMain: [

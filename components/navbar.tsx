@@ -14,7 +14,7 @@ import { config } from "@/lib/config";
 import { Button } from "./ui/button";
 import { HoveredLink, Menu, MenuItem } from "@/components/ui/navbar-menu";
 import { cn } from "@/lib/utils";
-import { Menu as MenuIcon, ChevronDown } from "lucide-react";
+import { Menu as MenuIcon, ChevronDown, User, Building2, Building, BookOpen, Code, GraduationCap } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -34,16 +34,25 @@ import {
 
 const features = [
   {
-    title: "Datum AI Drafter",
+    title: "Freelance Architects & Small Studios",
     href: "/features/ai-drafter",
     description:
-      "AI-assisted CAD design automation for architectural drawings and blueprints.",
+      "Boost productivity, Handle more projects & statisfy clients quickly",
+    icon: User,
   },
   {
-    title: "3D Planner",
+    title: "Architectural Firms",
     href: "/features/3d-planner",
     description:
-      "Natural language-processed 3D modeling and space planning tools.",
+      "Projects delivered faster with leaner teams",
+    icon: Building2,
+  },
+  {
+    title: "Architectural Enterprises",
+    href: "/features/3d-planner",
+    description:
+      "Enable more exploration & Better design outcomes at scale",
+    icon: Building,
   },
 ];
 
@@ -53,16 +62,19 @@ const documentation = [
     href: "/docs/getting-started",
     description:
       "Learn how to integrate our AI-powered design tools into your workflow.",
+    icon: BookOpen,
   },
   {
     title: "API Reference",
     href: "/docs/api",
     description: "Complete API documentation for developers and integrators.",
+    icon: Code,
   },
   {
     title: "Tutorials",
     href: "/docs/tutorials",
     description: "Step-by-step guides for common design automation tasks.",
+    icon: GraduationCap,
   },
 ];
 
@@ -102,19 +114,31 @@ export default function Navbar() {
             </Link>
 
             <MenuItem setActive={setActive} active={active} item="Features">
-              <div className="flex flex-col space-y-4 text-sm">
-                {features.map((feature) => (
-                  <HoveredLink key={feature.title} href={feature.href}>
-                    <div>
-                      <div className="font-medium text-black dark:text-white">
-                        {feature.title}
-                      </div>
-                      <p className="text-xs text-neutral-700 dark:text-neutral-300 mt-1">
-                        {feature.description}
-                      </p>
+              <div className="flex flex-col space-y-3 text-sm min-w-[320px]">
+                {features.map((feature, index) => {
+                  const Icon = feature.icon;
+                  return (
+                    <div key={feature.title}>
+                      {/* <HoveredLink href={feature.href}> */}
+                        <div className="p-4 rounded-lg bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 hover:from-blue-100 hover:to-indigo-100 dark:hover:from-blue-900/40 dark:hover:to-indigo-900/40 transition-all duration-300 border border-blue-200 dark:border-blue-800/20 shadow-sm hover:shadow-md group">
+                          <div className="flex items-start gap-3">
+                            <div className="p-2 rounded-md bg-blue-500/10 dark:bg-blue-500/20 group-hover:bg-blue-500/20 dark:group-hover:bg-blue-500/30 transition-colors">
+                              <Icon className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                            </div>
+                            <div className="flex-1">
+                              <div className="font-semibold text-black dark:text-white mb-1.5 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                                {feature.title}
+                              </div>
+                              <p className="text-xs text-neutral-600 dark:text-neutral-400 leading-relaxed">
+                                {feature.description}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      {/* </HoveredLink> */}
                     </div>
-                  </HoveredLink>
-                ))}
+                  );
+                })}
               </div>
             </MenuItem>
 
@@ -123,19 +147,31 @@ export default function Navbar() {
               active={active}
               item="Documentation"
             >
-              <div className="flex flex-col space-y-4 text-sm">
-                {documentation.map((doc) => (
-                  <HoveredLink key={doc.title} href={doc.href}>
-                    <div>
-                      <div className="font-medium text-black dark:text-white">
-                        {doc.title}
-                      </div>
-                      <p className="text-xs text-neutral-700 dark:text-neutral-300 mt-1">
-                        {doc.description}
-                      </p>
+              <div className="flex flex-col space-y-3 text-sm min-w-[320px]">
+                {documentation.map((doc, index) => {
+                  const Icon = doc.icon;
+                  return (
+                    <div key={doc.title}>
+                      {/* <HoveredLink href={doc.href}> */}
+                        <div className="p-4 rounded-lg bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 hover:from-blue-100 hover:to-indigo-100 dark:hover:from-blue-900/40 dark:hover:to-indigo-900/40 transition-all duration-300 border border-blue-200 dark:border-blue-800/20 shadow-sm hover:shadow-md group">
+                          <div className="flex items-start gap-3">
+                            <div className="p-2 rounded-md bg-blue-500/10 dark:bg-blue-500/20 group-hover:bg-blue-500/20 dark:group-hover:bg-blue-500/30 transition-colors">
+                              <Icon className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                            </div>
+                            <div className="flex-1">
+                              <div className="font-semibold text-black dark:text-white mb-1.5 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                                {doc.title}
+                              </div>
+                              <p className="text-xs text-neutral-600 dark:text-neutral-400 leading-relaxed">
+                                {doc.description}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      {/* </HoveredLink> */}
                     </div>
-                  </HoveredLink>
-                ))}
+                  );
+                })}
               </div>
             </MenuItem>
 

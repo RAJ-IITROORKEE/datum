@@ -39,7 +39,9 @@ export default function ContactUs() {
       const data = await response.json();
 
       if (response.ok) {
-        toast.success(data.message || "Message sent successfully!");
+        toast.success("Message Sent Successfully!", {
+          description: data.message || "We'll get back to you as soon as possible.",
+        });
         setFormData({
           fullName: "",
           email: "",
@@ -47,11 +49,15 @@ export default function ContactUs() {
           message: "",
         });
       } else {
-        toast.error(data.error || "Failed to send message");
+        toast.error("Failed to Send Message", {
+          description: data.error || "Please check your information and try again.",
+        });
       }
     } catch (error) {
       console.error("Contact form error:", error);
-      toast.error("An unexpected error occurred");
+      toast.error("Something Went Wrong", {
+        description: "An unexpected error occurred. Please try again later.",
+      });
     } finally {
       setIsLoading(false);
     }
