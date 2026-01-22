@@ -6,6 +6,7 @@ import {
   Users,
   Settings,
   GalleryVerticalEnd,
+  Mail,
 } from "lucide-react"
 
 import { NavMain } from "@/components/admin/nav-main"
@@ -56,6 +57,17 @@ const data = {
         {
           title: "All Contacts",
           url: config.routes.admin.contacts,
+        },
+      ],
+    },
+    {
+      title: "Newsletter",
+      url: "/admin/newsletter",
+      icon: Mail,
+      items: [
+        {
+          title: "Subscribers",
+          url: "/admin/newsletter",
         },
       ],
     },

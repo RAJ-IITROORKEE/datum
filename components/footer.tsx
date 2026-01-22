@@ -7,15 +7,46 @@ import { Button } from "@/components/ui/button";
 import { Mail, Send } from "lucide-react";
 import { FaLinkedin, FaInstagram } from "react-icons/fa";
 import { useState } from "react";
+import { toast } from "sonner";
 
 export default function Footer() {
   const currentYear = new Date().getFullYear();
   const [email, setEmail] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
 
-  const handleSubscribe = (e: React.FormEvent) => {
+  const handleSubscribe = async (e: React.FormEvent) => {
     e.preventDefault();
-    console.log("Subscribe:", email);
-    setEmail("");
+    
+    if (!email) {
+      toast.error("Please enter your email address");
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      const response = await fetch("/api/newsletter", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        toast.success(data.message || "Successfully subscribed to newsletter!");
+        setEmail("");
+      } else {
+        toast.error(data.error || "Failed to subscribe. Please try again.");
+      }
+    } catch (error) {
+      console.error("Newsletter subscription error:", error);
+      toast.error("An unexpected error occurred. Please try again later.");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -126,14 +157,16 @@ export default function Footer() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
+                disabled={isLoading}
                 className="flex-1 focus-visible:ring-2 focus-visible:ring-primary"
               />
               <Button 
                 size="icon" 
                 type="submit" 
+                disabled={isLoading}
                 className="shrink-0"
               >
-                <Send className="h-4 w-4" />
+                <Send className={`h-4 w-4 ${isLoading ? "animate-pulse" : ""}`} />
               </Button>
             </form>
           </div>

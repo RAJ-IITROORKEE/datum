@@ -58,7 +58,7 @@ export const FlipWords = ({
           position: "absolute",
         }}
         className={cn(
-          "z-10 inline-block relative text-left text-blue-600 dark:text-blue-400 px-2",
+          "z-10 inline-block relative text-left px-2",
           className
         )}
         key={currentWord}
@@ -73,7 +73,12 @@ export const FlipWords = ({
               delay: wordIndex * 0.3,
               duration: 0.3,
             }}
-            className="inline-block whitespace-nowrap"
+            className={cn(
+              "inline-block whitespace-nowrap",
+              wordIndex >= 3 
+                ? "text-blue-600 dark:text-blue-400" 
+                : "text-black dark:text-neutral-100"
+            )}
           >
             {word.split("").map((letter, letterIndex) => (
               <motion.span
