@@ -16,6 +16,9 @@ import {
   SidebarTrigger,
 } from "@/components/admin/ui/sidebar"
 import { config } from "@/lib/config"
+import { Button } from "@/components/ui/button"
+import Link from "next/link"
+// import { Home } from "lucide-react"
 
 export default function AdminLayout({
   children,
@@ -27,7 +30,7 @@ export default function AdminLayout({
       <AppSidebar />
       <SidebarInset>
         <header className="flex h-16 shrink-0 items-center gap-2 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12">
-          <div className="flex items-center gap-2 px-4">
+          <div className="flex items-center gap-2 px-4 flex-1">
             <SidebarTrigger className="-ml-1" />
             <Separator
               orientation="vertical"
@@ -46,6 +49,14 @@ export default function AdminLayout({
                 </BreadcrumbItem>
               </BreadcrumbList>
             </Breadcrumb>
+          </div>
+          <div className="px-4">
+            <Button variant="ghost" size="sm" asChild>
+              <Link href="/">
+                {/* <Home className="h-4 w-4 mr-2" /> */}
+                Home
+              </Link>
+            </Button>
           </div>
         </header>
         <div className="flex flex-1 flex-col gap-4 p-4 pt-0">

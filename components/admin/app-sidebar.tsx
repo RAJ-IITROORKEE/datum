@@ -8,6 +8,7 @@ import {
   GalleryVerticalEnd,
   Mail,
 } from "lucide-react"
+import { useUser } from "@clerk/nextjs"
 
 import { NavMain } from "@/components/admin/nav-main"
 import { NavProjects } from "@/components/admin/nav-projects"
@@ -53,23 +54,11 @@ const data = {
       title: "Contacts",
       url: config.routes.admin.contacts,
       icon: Users,
-      items: [
-        {
-          title: "All Contacts",
-          url: config.routes.admin.contacts,
-        },
-      ],
     },
     {
       title: "Newsletter",
       url: "/admin/newsletter",
       icon: Mail,
-      items: [
-        {
-          title: "Subscribers",
-          url: "/admin/newsletter",
-        },
-      ],
     },
     {
       title: "Settings",
@@ -87,6 +76,14 @@ const data = {
 }
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+  const { user } = useUser()
+  
+  const userData = {
+    name: user?.fullName || user?.firstName || "Admin User",
+    email: user?.primaryEmailAddress?.emailAddress || "admin@datum.com",
+    avatar: user?.imageUrl || "",
+  }
+  
   return (
     <Sidebar collapsible="icon" {...props}>
       <SidebarHeader>
@@ -97,7 +94,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         {data.projects.length > 0 && <NavProjects projects={data.projects} />}
       </SidebarContent>
       <SidebarFooter>
-        <NavUser user={data.user} />
+        <NavUser user={userData} />
       </SidebarFooter>
       <SidebarRail />
     </Sidebar>
