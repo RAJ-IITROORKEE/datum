@@ -45,3 +45,23 @@ model Newsletter {
 
   @@map("newsletters")
 }
+
+model AdminSurvey {
+  id                    String   @id @default(cuid())
+  firmsName             String
+  founderPrincipal      String
+  yearOfEstablishment   Int?
+  websiteLink           String?
+  officeAddress         String
+  contactNumber         String
+  state                 String
+  city                  String
+  email                 String
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@map("admin_surveys")
+  @@index([state])
+  @@index([city])
+  @@index([yearOfEstablishment])
+}

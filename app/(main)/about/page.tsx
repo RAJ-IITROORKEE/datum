@@ -77,7 +77,7 @@ const About = () => {
                 <span className="text-foreground font-semibold">IIT Roorkee</span>. As students and 
                 practitioners, we lived the frustration of the{" "}
                 <span className="text-foreground font-semibold">&quot;drafting tax&quot;</span>—realizing 
-                that for every hour we spent designing, we spent two hours on repetitive manual documentation.
+                that for every hour we spent designing, we spent hours on repetitive manual documentation.
               </p>
               
               <p>

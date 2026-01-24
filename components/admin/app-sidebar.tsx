@@ -7,6 +7,7 @@ import {
   Settings,
   GalleryVerticalEnd,
   Mail,
+  Building2,
 } from "lucide-react"
 import { useUser } from "@clerk/nextjs"
 
@@ -45,7 +46,7 @@ const data = {
       isActive: true,
       items: [
         {
-          title: "Overview",
+          title: "Users",
           url: config.routes.admin.dashboard,
         },
       ],
@@ -59,6 +60,11 @@ const data = {
       title: "Newsletter",
       url: "/admin/newsletter",
       icon: Mail,
+    },
+    {
+      title: "Admin Survey",
+      url: "/admin/survey",
+      icon: Building2,
     },
     {
       title: "Settings",
