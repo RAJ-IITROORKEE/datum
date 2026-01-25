@@ -3,9 +3,10 @@ import { prisma } from "@/lib/prisma";
 
 export async function DELETE(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  context: { params: any }
 ) {
   try {
+    const params = await context.params;
     await prisma.contactUs.delete({
       where: { id: params.id },
     });
@@ -25,9 +26,10 @@ export async function DELETE(
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  context: { params: any }
 ) {
   try {
+    const params = await context.params;
     const contact = await prisma.contactUs.findUnique({
       where: { id: params.id },
     });

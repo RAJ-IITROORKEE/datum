@@ -4,7 +4,7 @@ import { motion } from "motion/react";
 
 
 
-const transition = {
+const transition: any = {
   type: "spring",
   mass: 0.5,
   damping: 11.5,

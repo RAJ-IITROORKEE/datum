@@ -25,7 +25,8 @@ export const metadata: Metadata = {
   title: config.app.name,
   description: config.app.description,
   icons: {
-    icon: '/fav.png',
+    icon: '/fav-ico.svg',
+ 
   },
 };
 
