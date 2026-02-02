@@ -24,10 +24,6 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: config.app.name,
   description: config.app.description,
-  icons: {
-    icon: '/fav-ico.svg',
- 
-  },
 };
 
 export default function RootLayout({

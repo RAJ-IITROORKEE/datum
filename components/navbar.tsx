@@ -94,7 +94,7 @@ export default function Navbar() {
           <div className="shrink-0 inline-flex items-center">
             <Link href={config.routes.home} className="flex items-center">
               <img
-                src="/datum_logo.png"
+                src="/fav.png"
                 alt={config.app.name}
                 className="h-10 w-auto rounded-full"
               />
