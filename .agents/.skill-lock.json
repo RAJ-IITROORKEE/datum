@@ -1,0 +1,14 @@
+{
+  "version": 3,
+  "skills": {
+    "ui-ux-pro-max": {
+      "source": "openclaw/skills",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/openclaw/skills.git",
+      "skillFolderHash": "",
+      "installedAt": "2026-03-05T19:40:55.260Z",
+      "updatedAt": "2026-03-05T19:40:55.272Z"
+    }
+  },
+  "dismissed": {}
+}

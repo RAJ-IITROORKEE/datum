@@ -6,13 +6,12 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mongodb"
   url      = env("DATABASE_URL")
-  // directUrl= env("DIRECT_URL")
 }
 
 model User {
-  id          String   @id @default(cuid())
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
   clerkId     String   @unique
   name        String
   email       String   @unique
@@ -25,20 +24,49 @@ model User {
   @@map("users")
 }
 
+enum ContactStatus {
+  PENDING
+  RESOLVED
+  DELETED
+}
+
+enum ConversationType {
+  NEW_INQUIRY
+  ADMIN_REPLY
+  USER_REPLY
+}
+
 model ContactUs {
-  id        String   @id @default(cuid())
-  fullName  String
-  email     String
-  subject   String
-  message   String   @db.Text
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id               String           @id @default(auto()) @map("_id") @db.ObjectId
+  name             String
+  email            String
+  subject          String
+  message          String
+  status           ContactStatus    @default(PENDING)
+
+  // Thread management
+  threadId         String?
+  parentId         String?          @db.ObjectId
+  conversationType ConversationType @default(NEW_INQUIRY)
+
+  // Rate limiting
+  dailyMessageCount Int             @default(0)
+  lastMessageDate   DateTime?
+
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  // Self-referential relation for threading
+  parent           ContactUs?       @relation("ContactThread", fields: [parentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  replies          ContactUs[]      @relation("ContactThread")
 
   @@map("contact_us")
+  @@index([threadId])
+  @@index([email])
 }
 
 model Newsletter {
-  id        String   @id @default(cuid())
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
   email     String   @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -47,7 +75,7 @@ model Newsletter {
 }
 
 model AdminSurvey {
-  id                    String   @id @default(cuid())
+  id                    String   @id @default(auto()) @map("_id") @db.ObjectId
   firmsName             String
   founderPrincipal      String
   yearOfEstablishment   Int?

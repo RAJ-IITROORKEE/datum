@@ -38,7 +38,12 @@ export async function POST(req: NextRequest) {
     const validatedData = contactSchema.parse(body);
 
     const contact = await prisma.contactUs.create({
-      data: validatedData,
+      data: {
+        name: validatedData.fullName,
+        email: validatedData.email,
+        subject: validatedData.subject,
+        message: validatedData.message,
+      },
     });
 
     return NextResponse.json(
