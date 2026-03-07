@@ -12,7 +12,7 @@ export async function PATCH(
     const { status } = body;
 
     if (!["PENDING", "RESOLVED", "DELETED"].includes(status)) {
-      return new NextResponse("Invalid status value", { status: 400 });
+      return NextResponse.json({ error: "Invalid status value" }, { status: 400 });
     }
 
     const updated = await prisma.contactUs.update({
@@ -23,7 +23,7 @@ export async function PATCH(
     return NextResponse.json(updated);
   } catch (error) {
     console.error("PATCH ContactUs error:", error);
-    return new NextResponse("Failed to update contact", { status: 500 });
+    return NextResponse.json({ error: "Failed to update contact" }, { status: 500 });
   }
 }
 
@@ -41,7 +41,7 @@ export async function DELETE(
     });
 
     if (!contact) {
-      return new NextResponse("Contact not found", { status: 404 });
+      return NextResponse.json({ error: "Contact not found" }, { status: 404 });
     }
 
     if (contact.threadId) {
@@ -58,9 +58,9 @@ export async function DELETE(
       await prisma.contactUs.delete({ where: { id } });
     }
 
-    return new NextResponse("Contact deleted successfully", { status: 200 });
+    return NextResponse.json({ message: "Contact deleted successfully" }, { status: 200 });
   } catch (error) {
     console.error("DELETE ContactUs error:", error);
-    return new NextResponse("Failed to delete contact", { status: 500 });
+    return NextResponse.json({ error: "Failed to delete contact" }, { status: 500 });
   }
 }
