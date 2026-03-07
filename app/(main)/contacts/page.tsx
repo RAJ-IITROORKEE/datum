@@ -127,8 +127,8 @@ function ContactUsInner() {
                 </div>
                 <div>
                   <p className="font-semibold text-sm">Email Support</p>
-                  <p className="text-muted-foreground text-sm mt-0.5">support@datum.app</p>
-                  <p className="text-xs text-muted-foreground mt-1">We reply within 1â€“2 business days</p>
+                  <p className="text-muted-foreground text-sm mt-0.5">support@datumm.ai</p>
+                  <p className="text-xs text-muted-foreground mt-1">We reply within 1–2 business days</p>
                 </div>
               </CardContent>
             </Card>
