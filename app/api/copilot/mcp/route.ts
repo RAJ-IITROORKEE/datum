@@ -49,6 +49,7 @@ export async function GET() {
       revitConnected,
       activeDevice: recentSession?.deviceName || null,
       reason,
+      debug: mcpClient.getDebugInfo(),
     });
   } catch (error) {
     console.error("Failed to list MCP tools:", error);

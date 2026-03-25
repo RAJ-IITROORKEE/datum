@@ -24,6 +24,18 @@ export interface MCPToolResult {
   error?: string;
 }
 
+export interface MCPDebugInfo {
+  initialized: boolean;
+  hasSession: boolean;
+  sessionIdSuffix: string | null;
+  lastInitializeAt: string | null;
+  lastRpcMethod: string | null;
+  lastRpcStatus: number | null;
+  lastError: string | null;
+  lastRecoveryAt: string | null;
+  sessionResetCount: number;
+}
+
 class MCPClient {
   private baseUrl: string;
   private apiKey: string;
@@ -33,6 +45,17 @@ class MCPClient {
   private initializePromise: Promise<void> | null = null;
   private sendInitializedNotification =
     (process.env.MCP_SEND_INITIALIZED_NOTIFICATION || "false").toLowerCase() === "true";
+  private debugInfo: MCPDebugInfo = {
+    initialized: false,
+    hasSession: false,
+    sessionIdSuffix: null,
+    lastInitializeAt: null,
+    lastRpcMethod: null,
+    lastRpcStatus: null,
+    lastError: null,
+    lastRecoveryAt: null,
+    sessionResetCount: 0,
+  };
 
   constructor() {
     this.baseUrl = process.env.MCP_SERVER_URL || "";
@@ -70,6 +93,19 @@ class MCPClient {
     this.initialized = false;
     this.tools = null;
     this.initializePromise = null;
+    this.debugInfo.initialized = false;
+    this.debugInfo.hasSession = false;
+    this.debugInfo.sessionIdSuffix = null;
+    this.debugInfo.sessionResetCount += 1;
+  }
+
+  getDebugInfo(): MCPDebugInfo {
+    return {
+      ...this.debugInfo,
+      initialized: this.initialized,
+      hasSession: Boolean(this.sessionId),
+      sessionIdSuffix: this.sessionId ? this.sessionId.slice(-8) : null,
+    };
   }
 
   private shouldRetrySession(responseStatus: number, responseBody: string): boolean {
@@ -187,6 +223,11 @@ class MCPClient {
     }
 
     this.sessionId = sessionIdHeader;
+    this.debugInfo.lastInitializeAt = new Date().toISOString();
+    this.debugInfo.initialized = true;
+    this.debugInfo.hasSession = true;
+    this.debugInfo.sessionIdSuffix = this.sessionId.slice(-8);
+    this.debugInfo.lastError = null;
 
     if (this.sendInitializedNotification) {
       await fetch(`${this.baseUrl}/mcp`, {
@@ -212,6 +253,7 @@ class MCPClient {
 
   private async callRpc(method: string, params: Record<string, unknown>, retriesLeft = 2): Promise<any> {
     await this.ensureInitialized();
+    this.debugInfo.lastRpcMethod = method;
 
     const response = await fetch(`${this.baseUrl}/mcp`, {
       method: "POST",
@@ -231,16 +273,21 @@ class MCPClient {
 
     if (!response.ok) {
       const raw = await response.text();
+      this.debugInfo.lastRpcStatus = response.status;
+      this.debugInfo.lastError = `HTTP ${response.status}${raw ? `: ${raw.slice(0, 240)}` : ""}`;
       if (retriesLeft > 0 && this.shouldRetrySession(response.status, raw)) {
         this.resetSession();
+        this.debugInfo.lastRecoveryAt = new Date().toISOString();
         return this.callRpc(method, params, retriesLeft - 1);
       }
       throw new Error(`MCP RPC failed (${method}): ${response.status}`);
     }
 
     const data = await this.parseRpcResponse(response);
+    this.debugInfo.lastRpcStatus = 200;
     if (data?.error) {
       const message = String(data.error.message || `MCP RPC error: ${method}`);
+      this.debugInfo.lastError = message;
       const normalized = message.toLowerCase();
       if (
         retriesLeft > 0 &&
@@ -249,10 +296,13 @@ class MCPClient {
           normalized.includes("no valid session"))
       ) {
         this.resetSession();
+        this.debugInfo.lastRecoveryAt = new Date().toISOString();
         return this.callRpc(method, params, retriesLeft - 1);
       }
       throw new Error(data.error.message || `MCP RPC error: ${method}`);
     }
+
+    this.debugInfo.lastError = null;
 
     return data?.result;
   }
