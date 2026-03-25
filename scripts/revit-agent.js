@@ -2,14 +2,61 @@
 
 const net = require("node:net");
 const readline = require("node:readline");
+const fs = require("node:fs");
+const path = require("node:path");
+const os = require("node:os");
 
-const DATUM_URL = process.env.DATUM_URL || "http://localhost:3000";
-const POLL_MS = Number(process.env.AGENT_POLL_MS || 1200);
-const HEARTBEAT_MS = Number(process.env.AGENT_HEARTBEAT_MS || 5000);
-const REVIT_HOST = process.env.REVIT_HOST || "127.0.0.1";
-const REVIT_PORT = Number(process.env.REVIT_PORT || 8080);
+const APP_DIR = path.join(os.homedir(), "AppData", "Roaming", "DatumRevitAgent");
+const CONFIG_PATH = process.env.DATUM_AGENT_CONFIG || path.join(APP_DIR, "config.json");
 
-let token = process.env.REVIT_AGENT_TOKEN || "";
+function parseArgs(argv) {
+  const out = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg.startsWith("--")) continue;
+    const key = arg.slice(2);
+    const next = argv[i + 1];
+    if (!next || next.startsWith("--")) {
+      out[key] = true;
+      continue;
+    }
+    out[key] = next;
+    i += 1;
+  }
+  return out;
+}
+
+function ensureConfigDir() {
+  if (!fs.existsSync(APP_DIR)) {
+    fs.mkdirSync(APP_DIR, { recursive: true });
+  }
+}
+
+function loadConfig() {
+  try {
+    if (!fs.existsSync(CONFIG_PATH)) return {};
+    const raw = fs.readFileSync(CONFIG_PATH, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+function saveConfig(nextConfig) {
+  ensureConfigDir();
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(nextConfig, null, 2), "utf8");
+}
+
+const args = parseArgs(process.argv.slice(2));
+const config = loadConfig();
+
+const DATUM_URL = args.url || process.env.DATUM_URL || config.datumUrl || "http://localhost:3000";
+const POLL_MS = Number(args.pollMs || process.env.AGENT_POLL_MS || config.pollMs || 1200);
+const HEARTBEAT_MS = Number(args.heartbeatMs || process.env.AGENT_HEARTBEAT_MS || config.heartbeatMs || 5000);
+const REVIT_HOST = args.revitHost || process.env.REVIT_HOST || config.revitHost || "127.0.0.1";
+const REVIT_PORT = Number(args.revitPort || process.env.REVIT_PORT || config.revitPort || 8080);
+
+let token = args.token || process.env.REVIT_AGENT_TOKEN || config.token || "";
 
 function jsonRpcRequest(commandName, payload) {
   return {
@@ -92,10 +139,13 @@ async function api(path, options = {}) {
 }
 
 async function pairFlow() {
+  const prefilledCode = typeof args["pair-code"] === "string" ? args["pair-code"].trim().toUpperCase() : "";
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const code = await new Promise((resolve) => {
-    rl.question("Enter pairing code from Copilot UI: ", (answer) => resolve(answer.trim().toUpperCase()));
-  });
+  const code =
+    prefilledCode ||
+    (await new Promise((resolve) => {
+      rl.question("Enter pairing code from Copilot UI: ", (answer) => resolve(answer.trim().toUpperCase()));
+    }));
   rl.close();
 
   const pairResult = await api("/api/revit/agent/pair", {
@@ -109,8 +159,19 @@ async function pairFlow() {
   });
 
   token = pairResult.token;
-  console.log("Paired successfully. Save this token securely:");
-  console.log(token);
+
+  const nextConfig = {
+    datumUrl: DATUM_URL,
+    revitHost: REVIT_HOST,
+    revitPort: REVIT_PORT,
+    pollMs: POLL_MS,
+    heartbeatMs: HEARTBEAT_MS,
+    token,
+  };
+  saveConfig(nextConfig);
+
+  console.log("Paired successfully. Token saved to config.");
+  console.log(`Config file: ${CONFIG_PATH}`);
 }
 
 async function heartbeatLoop() {
@@ -168,12 +229,27 @@ async function commandLoop() {
 }
 
 async function main() {
+  if (args.help) {
+    console.log("Datum Revit Agent");
+    console.log("Options:");
+    console.log("  --url <https://domain>");
+    console.log("  --token <agent-token>");
+    console.log("  --pair-code <code>");
+    console.log("  --revitHost <host>");
+    console.log("  --revitPort <port>");
+    console.log("  --pollMs <ms>");
+    console.log("  --heartbeatMs <ms>");
+    console.log("  --help");
+    return;
+  }
+
   if (!token) {
     await pairFlow();
   }
 
   console.log(`Datum URL: ${DATUM_URL}`);
   console.log(`Revit plugin socket: ${REVIT_HOST}:${REVIT_PORT}`);
+  console.log(`Config: ${CONFIG_PATH}`);
   console.log("Agent running. Press Ctrl+C to stop.");
 
   heartbeatLoop();

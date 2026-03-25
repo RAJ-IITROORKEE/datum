@@ -11,7 +11,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Check, Copy, Link2, RefreshCw } from "lucide-react";
+import { Check, Copy, Download, ExternalLink, Link2, RefreshCw } from "lucide-react";
 
 type RevitStatusResponse = {
   connected: boolean;
@@ -30,6 +30,7 @@ export function RevitConnectionMenu() {
   const [pairCodeExpiresAt, setPairCodeExpiresAt] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
+  const downloadUrl = "/api/revit/agent/download";
 
   const refreshStatus = async () => {
     const response = await fetch("/api/revit/status", { cache: "no-store" });
@@ -92,16 +93,35 @@ export function RevitConnectionMenu() {
           <Link2 className="h-4 w-4" />
           {loading ? "Generating..." : "Generate pair code"}
         </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <a href={downloadUrl} target="_blank" rel="noreferrer" download>
+            <Download className="h-4 w-4" />
+            Download Windows agent (.exe)
+          </a>
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
         <div className="px-2 py-1.5 text-xs text-muted-foreground">
           {status?.connected
             ? `Connected to ${status.activeSession?.deviceName || "device"}`
             : "No active local Revit agent"}
         </div>
+        <div className="px-2 pb-1.5 text-[11px] text-muted-foreground">
+          Flow: Download agent, run on Revit machine, paste pairing code, keep Revit plugin ON.
+        </div>
 
         {pairCode ? (
           <>
             <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={copyPairCode}>
+              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+              {copied ? "Code copied" : "Copy pairing code"}
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <a href="/revit-agent-setup.md" target="_blank" rel="noreferrer">
+                <ExternalLink className="h-4 w-4" />
+                Open setup guide
+              </a>
+            </DropdownMenuItem>
             <div className="px-2 py-1.5">
               <div className="mb-1 text-[11px] text-muted-foreground">Pairing code</div>
               <div className="flex items-center justify-between rounded-md border px-2 py-1">

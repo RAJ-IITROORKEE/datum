@@ -16,6 +16,20 @@ This connects your local Revit plugin to cloud Copilot.
 
 ## 3) Start local agent
 
+### Option A (recommended for users): `.exe`
+
+Download and run `DatumRevitAgent.exe` on the Revit machine.
+
+If using command line:
+
+```powershell
+.\DatumRevitAgent.exe --url https://your-datum-domain.com
+```
+
+Then enter the pairing code when prompted.
+
+### Option B (developer mode): Node script
+
 Run on the Revit machine:
 
 ```bash
@@ -28,6 +42,12 @@ Optional persistent token mode:
 
 ```bash
 DATUM_URL=https://your-datum-domain.com REVIT_AGENT_TOKEN=<token> npm run revit-agent
+```
+
+For `.exe`, token/config is saved automatically at:
+
+```text
+%APPDATA%\DatumRevitAgent\config.json
 ```
 
 ## 4) Execute commands from chat
