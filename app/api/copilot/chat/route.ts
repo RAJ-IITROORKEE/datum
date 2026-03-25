@@ -46,9 +46,9 @@ interface AgentToolCall {
 function resolveToolAlias(toolName: string): string {
   const normalized = toolName.trim().toLowerCase();
   const aliases: Record<string, string> = {
-    analyze_layout_design: "layout_analysis",
-    analyse_layout_design: "layout_analysis",
-    analyze_layout: "layout_analysis",
+    layout_analysis: "analyze_layout_design",
+    analyse_layout_design: "analyze_layout_design",
+    analyze_layout: "analyze_layout_design",
     get_levels: "get_levels_list",
     create_walls: "create_wall",
   };
@@ -74,8 +74,8 @@ function normalizeCreateWallArgs(args: Record<string, unknown>): Record<string, 
       return wall;
     }
 
-    const baseLevelIdRaw = typedWall.levelId;
-    let baseLevelId = 1;
+    const baseLevelIdRaw = typedWall.baseLevelId ?? typedWall.levelId;
+    let baseLevelId: number | undefined;
     if (typeof baseLevelIdRaw === "number") {
       baseLevelId = baseLevelIdRaw;
     } else if (typeof baseLevelIdRaw === "string" && /^\d+$/.test(baseLevelIdRaw)) {
@@ -97,7 +97,8 @@ function normalizeCreateWallArgs(args: Record<string, unknown>): Record<string, 
       },
       baseLevelId,
       unconnectedHeight,
-      isStructural: false,
+      isStructural: typeof typedWall.isStructural === "boolean" ? typedWall.isStructural : false,
+      wallTypeName: typeof typedWall.wallTypeName === "string" ? typedWall.wallTypeName : undefined,
     };
   });
 
@@ -105,6 +106,44 @@ function normalizeCreateWallArgs(args: Record<string, unknown>): Record<string, 
     ...args,
     walls: normalizedWalls,
   };
+}
+
+function hasMissingBaseLevelId(args: Record<string, unknown>): boolean {
+  const walls = args.walls;
+  if (!Array.isArray(walls)) return false;
+
+  return walls.some((wall) => {
+    if (!wall || typeof wall !== "object") return false;
+    const typedWall = wall as Record<string, unknown>;
+    return typeof typedWall.baseLevelId !== "number";
+  });
+}
+
+function applyBaseLevelIdToWalls(
+  args: Record<string, unknown>,
+  baseLevelId: number
+): Record<string, unknown> {
+  const walls = args.walls;
+  if (!Array.isArray(walls)) return args;
+
+  return {
+    ...args,
+    walls: walls.map((wall) => {
+      if (!wall || typeof wall !== "object") return wall;
+      const typedWall = wall as Record<string, unknown>;
+      if (typeof typedWall.baseLevelId === "number") return wall;
+      return { ...typedWall, baseLevelId };
+    }),
+  };
+}
+
+async function resolveDefaultLevelIdForUser(clerkUserId: string): Promise<number | null> {
+  const levelsJob = await enqueueCommandForUser(clerkUserId, "get_levels_list", {});
+  const levelsResult = await waitForCommandResult(levelsJob.id);
+  if (!levelsResult.success) {
+    return null;
+  }
+  return extractFirstLevelId(levelsResult.result);
 }
 
 function emitContentChunk(
@@ -290,17 +329,17 @@ function resolveAutoToolCall(
     ["includeStructural", "includeArchitectural", "includeMEP", "includeAnnotations"].some(
       (k) => k in parsedJson
     ) &&
-    availableToolNames.has("layout_analysis")
+    availableToolNames.has("analyze_layout_design")
   ) {
-    return { toolName: "layout_analysis", args: parsedJson };
+    return { toolName: "analyze_layout_design", args: parsedJson };
   }
 
   if (
     containsAny(text, ["analyse", "analyze", "scan", "review plan", "check plan"]) &&
-    availableToolNames.has("layout_analysis")
+    availableToolNames.has("analyze_layout_design")
   ) {
     return {
-      toolName: "layout_analysis",
+      toolName: "analyze_layout_design",
       args: {
         includeStructural: true,
         includeArchitectural: true,
@@ -429,10 +468,16 @@ export async function POST(req: NextRequest) {
 
       if (toolName === "create_wall") {
         parsedArgs = normalizeCreateWallArgs(parsedArgs);
+        if (hasMissingBaseLevelId(parsedArgs)) {
+          const resolvedLevelId = await resolveDefaultLevelIdForUser(userId);
+          if (resolvedLevelId) {
+            parsedArgs = applyBaseLevelIdToWalls(parsedArgs, resolvedLevelId);
+          }
+        }
       }
 
       const continuous2BhkFromManual =
-        toolName === "layout_analysis" &&
+        toolName === "analyze_layout_design" &&
         (containsAny(userText.toLowerCase(), ["2bhk", "2 bhk", "two bedroom", "flat"]) ||
           has2BhkIntentInContext(messages));
 
@@ -458,7 +503,7 @@ export async function POST(req: NextRequest) {
                   kind: "analysis",
                   stage: "planning",
                   message: "Received 2BHK request. Starting continuous agent workflow",
-                  toolName: "layout_analysis",
+                  toolName: "analyze_layout_design",
                   details: "Flow: analyze → get levels → create walls",
                 })
               );
@@ -471,13 +516,13 @@ export async function POST(req: NextRequest) {
                     kind: "tool",
                     stage: "executing",
                     message: "Step 1/3: Analyzing current plan",
-                    toolName: "layout_analysis",
+                    toolName: "analyze_layout_design",
                     details: summarizeForDetails(parsedArgs, 700),
                   })
                 );
                 emitContentChunk(controller, encoder, "Starting plan analysis in Revit...\n\n");
 
-                const analysisJob = await enqueueCommandForUser(userId, "layout_analysis", parsedArgs);
+                const analysisJob = await enqueueCommandForUser(userId, "analyze_layout_design", parsedArgs);
                 const analysisResult = await waitForCommandResult(analysisJob.id);
                 if (!analysisResult.success) {
                   throw new Error(`Plan analysis failed: ${analysisResult.error}`);
@@ -490,7 +535,7 @@ export async function POST(req: NextRequest) {
                     kind: "analysis",
                     stage: "completed",
                     message: "Step 1/3 complete: plan analysis finished",
-                    toolName: "layout_analysis",
+                    toolName: "analyze_layout_design",
                     details: summarizeForDetails(analysisResult.result, 900),
                   })
                 );
@@ -560,7 +605,7 @@ export async function POST(req: NextRequest) {
                     kind: "analysis",
                     stage: "error",
                     message: "Realtime workflow blocked: Revit Agent disconnected",
-                    toolName: "layout_analysis",
+                    toolName: "analyze_layout_design",
                   })
                 );
                 emitContentChunk(controller, encoder, finalResponse);
@@ -665,11 +710,14 @@ export async function POST(req: NextRequest) {
         }
 
         if (mcpCatalogAvailable) {
-    const toolsList = mcpTools.slice(0, 50).map((t) => `- ${t.name}: ${t.description}`).join("\n");
+          const toolNamesCsv = mcpTools.map((t) => t.name).join(", ");
+          const toolsList = mcpTools.map((t) => `- ${t.name}: ${t.description}`).join("\n");
           mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=${mcpConnected ? "CONNECTED" : "DISCONNECTED"}\nMCP_CATALOG_STATUS=AVAILABLE\nMCP_TOOL_COUNT=${mcpToolCount}\nREVIT_AGENT_STATUS=${revitConnected ? "CONNECTED" : "DISCONNECTED"}\n\nYou have access to ${mcpToolCount} Revit MCP tools for BIM automation and architectural design:\n\n${toolsList}\n\nWhen users ask for Revit-related tasks:
 - If REVIT_AGENT_STATUS=CONNECTED, you can state that execution from Copilot is available.
 - If REVIT_AGENT_STATUS=DISCONNECTED, instruct user to connect Datum Revit Agent and keep Revit open.
 Do not claim MCP is disconnected when MCP_CONNECTION_STATUS=CONNECTED.
+      Use exact tool names from this catalog when suggesting or choosing commands:
+      MCP_TOOL_NAMES=${toolNamesCsv}
 For executable Revit tasks, prefer giving one concrete next command in this format:
 /run <tool_name> <json_args>
 Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
@@ -732,7 +780,7 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                 "Analyzing your current plan and preparing the 2BHK layout strategy...\n\n"
               );
 
-              const analysisJob = await enqueueCommandForUser(userId, "layout_analysis", {
+              const analysisJob = await enqueueCommandForUser(userId, "analyze_layout_design", {
                 includeStructural: true,
                 includeArchitectural: true,
                 includeMEP: false,
