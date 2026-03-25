@@ -36,7 +36,7 @@ export function RevitConnectionMenu() {
   const downloadUrl = "/api/revit/agent/download";
 
   const refreshStatus = async () => {
-    const response = await fetch("/api/revit/status", { cache: "no-store" });
+    const response = await fetch(`/api/revit/status?t=${Date.now()}`, { cache: "no-store" });
     if (!response.ok) return;
     const data = (await response.json()) as RevitStatusResponse;
     setStatus(data);
@@ -121,6 +121,10 @@ export function RevitConnectionMenu() {
             </DropdownMenuItem>
           </>
         ) : null}
+        <div className="px-2 pb-1.5 text-[11px] text-muted-foreground">
+          Agent version: {status?.currentAgentVersion || "unknown"}
+          {status?.latestAgentVersion ? ` • Latest: ${status.latestAgentVersion}` : ""}
+        </div>
         <div className="px-2 pb-1.5 text-[11px] text-muted-foreground">
           Flow: Download agent, run on Revit machine, paste pairing code, keep Revit plugin ON.
         </div>

@@ -73,9 +73,22 @@ export async function GET() {
         agentVersion: session.agentVersion,
         lastSeenAt: session.lastSeenAt,
       })),
+    }, {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+        Pragma: "no-cache",
+        Expires: "0",
+      },
     });
   } catch (error) {
     console.error("Revit status error:", error);
-    return NextResponse.json({ error: "Failed to fetch Revit status" }, { status: 500 });
+    return NextResponse.json({ error: "Failed to fetch Revit status" }, {
+      status: 500,
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+        Pragma: "no-cache",
+        Expires: "0",
+      },
+    });
   }
 }
