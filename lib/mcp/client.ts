@@ -31,6 +31,8 @@ class MCPClient {
   private sessionId: string | null = null;
   private initialized = false;
   private initializePromise: Promise<void> | null = null;
+  private sendInitializedNotification =
+    (process.env.MCP_SEND_INITIALIZED_NOTIFICATION || "false").toLowerCase() === "true";
 
   constructor() {
     this.baseUrl = process.env.MCP_SERVER_URL || "";
@@ -186,22 +188,24 @@ class MCPClient {
 
     this.sessionId = sessionIdHeader;
 
-    // Optional but standards-friendly notification after initialize
-    await fetch(`${this.baseUrl}/mcp`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...this.getAuthHeaders(),
-        ...this.getSessionHeaders(),
-      },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        method: "notifications/initialized",
-        params: {},
-      }),
-    }).catch(() => {
-      // Some servers may not require this notification; ignore failures.
-    });
+    if (this.sendInitializedNotification) {
+      await fetch(`${this.baseUrl}/mcp`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          ...this.getAuthHeaders(),
+          ...this.getSessionHeaders(),
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "notifications/initialized",
+          params: {},
+        }),
+      }).catch(() => {
+        // Some servers may not require this notification; ignore failures.
+      });
+    }
 
     this.initialized = true;
   }
