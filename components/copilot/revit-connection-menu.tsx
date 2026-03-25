@@ -11,7 +11,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Check, Copy, Download, ExternalLink, Link2, PlugZapOff, RefreshCw } from "lucide-react";
+import { Check, Copy, Download, ExternalLink, Link2, PlugZap, RefreshCw } from "lucide-react";
 
 type RevitStatusResponse = {
   connected: boolean;
@@ -117,7 +117,7 @@ export function RevitConnectionMenu() {
           {loading ? "Generating..." : "Generate pair code"}
         </DropdownMenuItem>
         <DropdownMenuItem onClick={disconnectRevitAgent} disabled={!status?.connected || disconnecting}>
-          <PlugZapOff className="h-4 w-4" />
+          <PlugZap className="h-4 w-4" />
           {disconnecting ? "Disconnecting..." : "Disconnect Revit agent"}
         </DropdownMenuItem>
         <DropdownMenuItem asChild>
