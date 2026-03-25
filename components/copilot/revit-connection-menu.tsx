@@ -94,7 +94,7 @@ export function RevitConnectionMenu() {
           {loading ? "Generating..." : "Generate pair code"}
         </DropdownMenuItem>
         <DropdownMenuItem asChild>
-          <a href={downloadUrl} target="_blank" rel="noreferrer" download>
+          <a href={downloadUrl} target="_blank" rel="noreferrer">
             <Download className="h-4 w-4" />
             Download Windows agent (.exe)
           </a>
