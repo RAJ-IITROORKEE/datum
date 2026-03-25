@@ -30,7 +30,7 @@ export function RevitConnectionMenu() {
   const [pairCodeExpiresAt, setPairCodeExpiresAt] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
-  const downloadUrl = "/api/revit/agent/download";
+  const downloadUrl = "/downloads/DatumRevitAgent.exe";
 
   const refreshStatus = async () => {
     const response = await fetch("/api/revit/status", { cache: "no-store" });
