@@ -3,7 +3,8 @@
 import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowUp, PanelLeft, Plus } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { ArrowUp, Bot, Brain, ChevronDown, PanelLeft, Plus, Wrench } from "lucide-react";
 import { ModelSwitcher } from "./model-switcher";
 import { MCPToolsDialog } from "./mcp-tools-dialog";
 import { RevitConnectionMenu } from "./revit-connection-menu";
@@ -14,6 +15,15 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   createdAt?: string;
+}
+
+interface AgentProgressEvent {
+  stage: "planning" | "executing" | "completed" | "error";
+  message: string;
+  toolName?: string;
+  kind?: "analysis" | "tool";
+  details?: string;
+  timestamp?: string;
 }
 
 interface ChatInterfaceProps {
@@ -31,6 +41,9 @@ export function ChatInterface({
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [model, setModel] = useState("anthropic/claude-sonnet-4.5");
+  const [agentEvents, setAgentEvents] = useState<AgentProgressEvent[]>([]);
+  const [analysisOpen, setAnalysisOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Fetch messages when conversation changes
@@ -71,6 +84,22 @@ export function ChatInterface({
     });
   };
 
+  const getAgentEventDotClassName = (stage: AgentProgressEvent["stage"]): string => {
+    if (stage === "completed") return "bg-green-500";
+    if (stage === "error") return "bg-red-500";
+    return "bg-blue-500";
+  };
+
+  const getVisibleAgentStatus = (): string => {
+    if (agentEvents.length === 0) {
+      return "Thinking through your request and planning execution...";
+    }
+    return agentEvents.at(-1)?.message ?? "Working...";
+  };
+
+  const analysisEvents = agentEvents.filter((event) => event.kind === "analysis");
+  const toolEvents = agentEvents.filter((event) => event.kind === "tool");
+
   const processStreamLine = (
     line: string,
     assistantMessage: Message
@@ -88,6 +117,7 @@ export function ChatInterface({
       const parsed = JSON.parse(data) as {
         content?: string;
         conversationId?: string;
+        agent?: AgentProgressEvent;
       };
 
       if (parsed.content) {
@@ -97,6 +127,10 @@ export function ChatInterface({
 
       if (parsed.conversationId && !conversationId) {
         onConversationCreated(parsed.conversationId);
+      }
+
+      if (parsed.agent) {
+        setAgentEvents((prev) => [...prev, parsed.agent!]);
       }
     } catch (error) {
       console.error("Failed to parse stream chunk:", error);
@@ -151,6 +185,9 @@ export function ChatInterface({
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
     setIsLoading(true);
+    setAgentEvents([]);
+    setAnalysisOpen(false);
+    setToolsOpen(false);
 
     try {
       const allMessages = [...messages, userMessage].map((msg) => ({
@@ -274,15 +311,86 @@ export function ChatInterface({
               </div>
             ))}
             {isLoading && (
-              <div className="rounded-2xl border border-blue-100 bg-card p-4 dark:border-blue-900/40">
+              <div className="rounded-2xl border border-blue-100 bg-card p-4 shadow-sm dark:border-blue-900/40">
                 <div className="flex gap-3">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 font-semibold text-blue-700 dark:bg-blue-500/20 dark:text-blue-200">
-                    AI
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-200">
+                    <Bot className="h-4 w-4 animate-pulse" />
                   </div>
-                  <div className="flex items-center gap-1">
-                    <div className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]"></div>
-                    <div className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]"></div>
-                    <div className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground"></div>
+                  <div className="flex-1">
+                    <div className="space-y-3">
+                      <div>
+                        <p className="text-sm font-medium text-foreground">Agent is building your design</p>
+                        <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
+                          <div className="flex items-center gap-1">
+                            <div className="h-2 w-2 animate-bounce rounded-full bg-blue-500 [animation-delay:-0.3s]"></div>
+                            <div className="h-2 w-2 animate-bounce rounded-full bg-blue-500 [animation-delay:-0.15s]"></div>
+                            <div className="h-2 w-2 animate-bounce rounded-full bg-blue-500"></div>
+                          </div>
+                          <span>{getVisibleAgentStatus()}</span>
+                        </div>
+                      </div>
+
+                      <Collapsible open={analysisOpen} onOpenChange={setAnalysisOpen}>
+                        <CollapsibleTrigger className="group flex w-full items-center justify-between rounded-md border border-blue-100 px-3 py-2 text-left text-xs font-medium text-muted-foreground hover:bg-blue-50/50 dark:border-blue-900/40 dark:hover:bg-blue-900/10">
+                          <span className="flex items-center gap-2">
+                            <Brain className="h-3.5 w-3.5" />
+                            Hidden analysis trace
+                          </span>
+                          <ChevronDown className="h-3.5 w-3.5 transition-transform group-data-[state=open]:rotate-180" />
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="pt-2">
+                          {analysisEvents.length === 0 ? (
+                            <p className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                              Analysis details will appear here while the agent plans.
+                            </p>
+                          ) : (
+                            <div className="space-y-2 rounded-md border bg-muted/20 p-2">
+                              {analysisEvents.map((event) => (
+                                <div key={`analysis-${event.timestamp ?? event.message}`} className="rounded-md bg-background px-2 py-1.5">
+                                  <div className="mb-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+                                    <span className={cn("h-1.5 w-1.5 rounded-full", getAgentEventDotClassName(event.stage))} />
+                                    <span className="uppercase tracking-wide">{event.stage}</span>
+                                  </div>
+                                  <p className="text-xs text-foreground">{event.message}</p>
+                                  {event.details ? <pre className="mt-1 overflow-auto rounded bg-muted/50 p-2 text-[11px] text-muted-foreground">{event.details}</pre> : null}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </CollapsibleContent>
+                      </Collapsible>
+
+                      <Collapsible open={toolsOpen} onOpenChange={setToolsOpen}>
+                        <CollapsibleTrigger className="group flex w-full items-center justify-between rounded-md border border-blue-100 px-3 py-2 text-left text-xs font-medium text-muted-foreground hover:bg-blue-50/50 dark:border-blue-900/40 dark:hover:bg-blue-900/10">
+                          <span className="flex items-center gap-2">
+                            <Wrench className="h-3.5 w-3.5" />
+                            Tool activity ({toolEvents.length})
+                          </span>
+                          <ChevronDown className="h-3.5 w-3.5 transition-transform group-data-[state=open]:rotate-180" />
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="pt-2">
+                          {toolEvents.length === 0 ? (
+                            <p className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                              Tool execution logs will appear here once commands start running.
+                            </p>
+                          ) : (
+                            <div className="space-y-2 rounded-md border bg-muted/20 p-2">
+                              {toolEvents.map((event) => (
+                                <div key={`tool-${event.timestamp ?? event.message}-${event.toolName ?? "unknown"}`} className="rounded-md bg-background px-2 py-1.5">
+                                  <div className="mb-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+                                    <span className={cn("h-1.5 w-1.5 rounded-full", getAgentEventDotClassName(event.stage))} />
+                                    <span className="uppercase tracking-wide">{event.stage}</span>
+                                    {event.toolName ? <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-foreground">{event.toolName}</span> : null}
+                                  </div>
+                                  <p className="text-xs text-foreground">{event.message}</p>
+                                  {event.details ? <pre className="mt-1 overflow-auto rounded bg-muted/50 p-2 text-[11px] text-muted-foreground">{event.details}</pre> : null}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </CollapsibleContent>
+                      </Collapsible>
+                    </div>
                   </div>
                 </div>
               </div>
