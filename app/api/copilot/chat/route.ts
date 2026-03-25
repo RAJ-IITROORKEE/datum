@@ -162,6 +162,11 @@ function is2BhkBuildIntent(input: string): boolean {
   );
 }
 
+function isContinuationIntent(input: string): boolean {
+  const text = input.toLowerCase().trim();
+  return containsAny(text, ["ok", "continue", "go ahead", "proceed", "yes", "next"]);
+}
+
 function has2BhkIntentInContext(messages: Array<{ role: string; content: unknown }>): boolean {
   const joined = messages
     .map((message) => (typeof message.content === "string" ? message.content : ""))
@@ -249,6 +254,33 @@ function buildSimple2BhkWalls(levelId: number) {
   };
 }
 
+function buildSimple2BhkFloor(levelId: number) {
+  return {
+    floors: [
+      {
+        levelId,
+        boundary: [
+          { x: 0, y: 0 },
+          { x: 14000, y: 0 },
+          { x: 14000, y: 12000 },
+          { x: 0, y: 12000 },
+        ],
+      },
+    ],
+  };
+}
+
+function buildSimple2BhkRooms(levelId: number) {
+  return {
+    rooms: [
+      { levelId, location: { x: 2500, y: 2000 }, name: "Living", number: "101" },
+      { levelId, location: { x: 2500, y: 6000 }, name: "Bedroom 1", number: "102" },
+      { levelId, location: { x: 10000, y: 2500 }, name: "Kitchen", number: "103" },
+      { levelId, location: { x: 10000, y: 7000 }, name: "Bedroom 2", number: "104" },
+    ],
+  };
+}
+
 function createSseData(payload: Record<string, unknown>): string {
   return `data: ${JSON.stringify(payload)}\n\n`;
 }
@@ -286,6 +318,51 @@ function summarizeForDetails(value: unknown, maxLength = 1400): string {
     }
     return "Unable to serialize details";
   }
+}
+
+function getToolExecutionError(result: unknown): string | null {
+  if (!result || typeof result !== "object") return null;
+  const typed = result as Record<string, unknown>;
+
+  if (typed.success === false && typeof typed.error === "string") {
+    return typed.error;
+  }
+
+  if (typed.Success === false && typeof typed.Message === "string") {
+    return typed.Message;
+  }
+
+  return null;
+}
+
+function getAnalysisCounts(result: unknown): { walls: number; floors: number; rooms: number } {
+  if (!result || typeof result !== "object") {
+    return { walls: 0, floors: 0, rooms: 0 };
+  }
+
+  const typed = result as Record<string, unknown>;
+  const response = (typed.Response || typed.response || {}) as Record<string, unknown>;
+
+  const wallCount =
+    (response.walls && typeof (response.walls as Record<string, unknown>).count === "number"
+      ? ((response.walls as Record<string, unknown>).count as number)
+      : 0) || 0;
+
+  const roomCount =
+    (response.rooms && typeof (response.rooms as Record<string, unknown>).count === "number"
+      ? ((response.rooms as Record<string, unknown>).count as number)
+      : 0) || 0;
+
+  const floorCount =
+    (response.floors && typeof (response.floors as Record<string, unknown>).count === "number"
+      ? ((response.floors as Record<string, unknown>).count as number)
+      : 0) || 0;
+
+  return {
+    walls: wallCount,
+    floors: floorCount,
+    rooms: roomCount,
+  };
 }
 
 function detectJsonFromText(input: string): Record<string, unknown> | null {
@@ -661,9 +738,10 @@ export async function POST(req: NextRequest) {
 
       const job = await enqueueCommandForUser(userId, toolName, parsedArgs);
       const result = await waitForCommandResult(job.id);
-      const resultText = result.success
+      const toolError = result.success ? getToolExecutionError(result.result) : null;
+      const resultText = result.success && !toolError
         ? `Tool ${toolName} executed successfully:\n${JSON.stringify(result.result, null, 2)}`
-        : `Tool ${toolName} failed: ${result.error}`;
+        : `Tool ${toolName} failed: ${toolError || result.error}`;
 
       await prisma.chatMessage.create({
         data: {
@@ -753,9 +831,9 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
     }
 
     const availableToolNames = new Set(mcpTools.map((tool) => tool.name));
-    const canRun2BhkWorkflow =
-      revitConnected &&
-      is2BhkBuildIntent(userText);
+    const isToolAvailable = (name: string) => !mcpCatalogAvailable || availableToolNames.has(name);
+    const continue2BhkWorkflow = has2BhkIntentInContext(messages) && isContinuationIntent(userText);
+    const canRun2BhkWorkflow = revitConnected && (is2BhkBuildIntent(userText) || continue2BhkWorkflow);
 
     if (canRun2BhkWorkflow) {
       const encoder = new TextEncoder();
@@ -765,6 +843,44 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
         async start(controller) {
           try {
             if (revitConnected) {
+              const canAnalyze = isToolAvailable("analyze_layout_design");
+              const canCreateWalls = isToolAvailable("create_wall");
+              const canCreateFloor = isToolAvailable("create_floor");
+              const canCreateRoom = isToolAvailable("create_room");
+              const canGetLevels = isToolAvailable("get_levels_list");
+
+              let beforeCounts = { walls: 0, floors: 0, rooms: 0 };
+              let afterCounts = { walls: 0, floors: 0, rooms: 0 };
+
+              if (!canCreateWalls || !canGetLevels) {
+                finalResponse =
+                  "Cannot start 2BHK execution because required tools are unavailable in current MCP catalog (need get_levels_list + create_wall).";
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "analysis",
+                    stage: "error",
+                    message: "Required tools are missing from catalog",
+                    details: `Available required flags => get_levels_list:${canGetLevels}, create_wall:${canCreateWalls}`,
+                  })
+                );
+                emitContentChunk(controller, encoder, finalResponse);
+
+                await prisma.chatMessage.create({
+                  data: {
+                    conversationId: conversation.id,
+                    role: "assistant",
+                    content: finalResponse,
+                  },
+                });
+
+                controller.enqueue(encoder.encode(createSseData({ conversationId: conversation.id })));
+                controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+                controller.close();
+                return;
+              }
+
               emitAgentProgress(
                 controller,
                 encoder,
@@ -774,35 +890,50 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                   message: "Analyzing current Revit plan before generating 2BHK layout",
                 })
               );
-              emitContentChunk(
-                controller,
-                encoder,
-                "Analyzing your current plan and preparing the 2BHK layout strategy...\n\n"
-              );
+              if (canAnalyze) {
+                emitContentChunk(
+                  controller,
+                  encoder,
+                  "Analyzing your current plan and preparing the 2BHK layout strategy...\n\n"
+                );
 
-              const analysisJob = await enqueueCommandForUser(userId, "analyze_layout_design", {
-                includeStructural: true,
-                includeArchitectural: true,
-                includeMEP: false,
-                includeAnnotations: false,
-                checkCodeCompliance: true,
-              });
-              const analysisResult = await waitForCommandResult(analysisJob.id);
+                const analysisJob = await enqueueCommandForUser(userId, "analyze_layout_design", {
+                  includeStructural: true,
+                  includeArchitectural: true,
+                  includeMEP: false,
+                  includeAnnotations: false,
+                  checkCodeCompliance: true,
+                });
+                const analysisResult = await waitForCommandResult(analysisJob.id);
+                const analysisToolError = analysisResult.success ? getToolExecutionError(analysisResult.result) : null;
 
-              if (!analysisResult.success) {
-                throw new Error(`Plan analysis failed: ${analysisResult.error}`);
+                if (!analysisResult.success || analysisToolError) {
+                  throw new Error(`Plan analysis failed: ${analysisToolError || analysisResult.error}`);
+                }
+
+                beforeCounts = getAnalysisCounts(analysisResult.result);
+
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "analysis",
+                    stage: "completed",
+                    message: "Current plan analysis completed",
+                    details: summarizeForDetails(analysisResult.result, 900),
+                  })
+                );
+              } else {
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "analysis",
+                    stage: "error",
+                    message: "analyze_layout_design not available, continuing with creation only",
+                  })
+                );
               }
-
-              emitAgentProgress(
-                controller,
-                encoder,
-                toAgentEvent({
-                  kind: "analysis",
-                  stage: "completed",
-                  message: "Current plan analysis completed",
-                  details: summarizeForDetails(analysisResult.result, 900),
-                })
-              );
               emitContentChunk(
                 controller,
                 encoder,
@@ -811,8 +942,9 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
 
               const levelsJob = await enqueueCommandForUser(userId, "get_levels_list", {});
               const levelsResult = await waitForCommandResult(levelsJob.id);
-              if (!levelsResult.success) {
-                throw new Error(`Failed to fetch levels: ${levelsResult.error}`);
+              const levelsToolError = levelsResult.success ? getToolExecutionError(levelsResult.result) : null;
+              if (!levelsResult.success || levelsToolError) {
+                throw new Error(`Failed to fetch levels: ${levelsToolError || levelsResult.error}`);
               }
 
               const levelId = extractFirstLevelId(levelsResult.result) ?? 1;
@@ -837,9 +969,10 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
 
               const wallsJob = await enqueueCommandForUser(userId, "create_wall", wallPayload);
               const wallsResult = await waitForCommandResult(wallsJob.id);
+              const wallsToolError = wallsResult.success ? getToolExecutionError(wallsResult.result) : null;
 
-              if (!wallsResult.success) {
-                throw new Error(`Wall creation failed: ${wallsResult.error}`);
+              if (!wallsResult.success || wallsToolError) {
+                throw new Error(`Wall creation failed: ${wallsToolError || wallsResult.error}`);
               }
 
               emitAgentProgress(
@@ -854,8 +987,114 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                 })
               );
 
+              if (canCreateFloor) {
+                const floorPayload = buildSimple2BhkFloor(levelId);
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "tool",
+                    stage: "executing",
+                    message: "Creating base floor slab",
+                    toolName: "create_floor",
+                    details: summarizeForDetails(floorPayload, 900),
+                  })
+                );
+
+                const floorJob = await enqueueCommandForUser(userId, "create_floor", floorPayload);
+                const floorResult = await waitForCommandResult(floorJob.id);
+                const floorToolError = floorResult.success ? getToolExecutionError(floorResult.result) : null;
+                if (floorResult.success && !floorToolError) {
+                  emitAgentProgress(
+                    controller,
+                    encoder,
+                    toAgentEvent({
+                      kind: "tool",
+                      stage: "completed",
+                      message: "Floor created successfully",
+                      toolName: "create_floor",
+                      details: summarizeForDetails(floorResult.result),
+                    })
+                  );
+                } else {
+                  emitAgentProgress(
+                    controller,
+                    encoder,
+                    toAgentEvent({
+                      kind: "tool",
+                      stage: "error",
+                      message: `Floor creation skipped: ${floorToolError || floorResult.error}`,
+                      toolName: "create_floor",
+                      details: summarizeForDetails({ error: floorToolError || floorResult.error }),
+                    })
+                  );
+                }
+              }
+
+              if (canCreateRoom) {
+                const roomPayload = buildSimple2BhkRooms(levelId);
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "tool",
+                    stage: "executing",
+                    message: "Creating core room objects",
+                    toolName: "create_room",
+                    details: summarizeForDetails(roomPayload, 900),
+                  })
+                );
+
+                const roomJob = await enqueueCommandForUser(userId, "create_room", roomPayload);
+                const roomResult = await waitForCommandResult(roomJob.id);
+                const roomToolError = roomResult.success ? getToolExecutionError(roomResult.result) : null;
+                if (roomResult.success && !roomToolError) {
+                  emitAgentProgress(
+                    controller,
+                    encoder,
+                    toAgentEvent({
+                      kind: "tool",
+                      stage: "completed",
+                      message: "Rooms created successfully",
+                      toolName: "create_room",
+                      details: summarizeForDetails(roomResult.result),
+                    })
+                  );
+                } else {
+                  emitAgentProgress(
+                    controller,
+                    encoder,
+                    toAgentEvent({
+                      kind: "tool",
+                      stage: "error",
+                      message: `Room creation skipped: ${roomToolError || roomResult.error}`,
+                      toolName: "create_room",
+                      details: summarizeForDetails({ error: roomToolError || roomResult.error }),
+                    })
+                  );
+                }
+              }
+
+              if (canAnalyze) {
+                const postAnalysisJob = await enqueueCommandForUser(userId, "analyze_layout_design", {
+                  includeStructural: true,
+                  includeArchitectural: true,
+                  includeMEP: false,
+                  includeAnnotations: false,
+                  checkCodeCompliance: false,
+                });
+                const postAnalysisResult = await waitForCommandResult(postAnalysisJob.id);
+                const postAnalysisError = postAnalysisResult.success
+                  ? getToolExecutionError(postAnalysisResult.result)
+                  : postAnalysisResult.error;
+
+                if (!postAnalysisError) {
+                  afterCounts = getAnalysisCounts(postAnalysisResult.result);
+                }
+              }
+
               finalResponse =
-                "2BHK base layout has been created in your Revit model (analysis + wall generation completed). Next I can continue step-by-step with doors, windows, and room placement in the same realtime flow.";
+                `2BHK copilot run finished with tool-aware execution. Before/After counts => walls: ${beforeCounts.walls}→${afterCounts.walls}, floors: ${beforeCounts.floors}→${afterCounts.floors}, rooms: ${beforeCounts.rooms}→${afterCounts.rooms}. Expand tool activity for exact step outcomes.`;
               emitContentChunk(controller, encoder, finalResponse);
             } else {
               finalResponse =
@@ -958,8 +1197,9 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
 
               const job = await enqueueCommandForUser(userId, autoToolCall.toolName, autoToolCall.args);
               const result = await waitForCommandResult(job.id);
+              const toolError = result.success ? getToolExecutionError(result.result) : null;
 
-              if (result.success) {
+              if (result.success && !toolError) {
                 finalResponse = `Executed ${autoToolCall.toolName} successfully in Revit.\n\nResult:\n${JSON.stringify(result.result, null, 2)}`;
                 emitAgentProgress(
                   controller,
@@ -973,16 +1213,16 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                   })
                 );
               } else {
-                finalResponse = `Execution failed for ${autoToolCall.toolName}: ${result.error}`;
+                finalResponse = `Execution failed for ${autoToolCall.toolName}: ${toolError || result.error}`;
                 emitAgentProgress(
                   controller,
                   encoder,
                   toAgentEvent({
                     kind: "tool",
                     stage: "error",
-                    message: result.error,
+                    message: String(toolError || result.error),
                     toolName: autoToolCall.toolName,
-                    details: summarizeForDetails({ error: result.error }),
+                    details: summarizeForDetails({ error: toolError || result.error }),
                   })
                 );
               }
