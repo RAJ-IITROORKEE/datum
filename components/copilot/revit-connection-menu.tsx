@@ -11,7 +11,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Check, Copy, Download, ExternalLink, Link2, RefreshCw } from "lucide-react";
+import { Check, Copy, Download, ExternalLink, Link2, PlugZapOff, RefreshCw } from "lucide-react";
 
 type RevitStatusResponse = {
   connected: boolean;
@@ -33,6 +33,7 @@ export function RevitConnectionMenu() {
   const [pairCodeExpiresAt, setPairCodeExpiresAt] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
   const downloadUrl = "/api/revit/agent/download";
 
   const refreshStatus = async () => {
@@ -69,6 +70,25 @@ export function RevitConnectionMenu() {
     setTimeout(() => setCopied(false), 1500);
   };
 
+  const disconnectRevitAgent = async () => {
+    if (!status?.activeSession?.id) return;
+    setDisconnecting(true);
+    try {
+      await fetch("/api/revit/disconnect", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ sessionId: status.activeSession.id }),
+      });
+      setPairCode(null);
+      setPairCodeExpiresAt(null);
+      await refreshStatus();
+    } finally {
+      setDisconnecting(false);
+    }
+  };
+
   const expiryText = useMemo(() => {
     if (!pairCodeExpiresAt) return null;
     return new Date(pairCodeExpiresAt).toLocaleTimeString();
@@ -95,6 +115,10 @@ export function RevitConnectionMenu() {
         <DropdownMenuItem onClick={generatePairCode} disabled={loading}>
           <Link2 className="h-4 w-4" />
           {loading ? "Generating..." : "Generate pair code"}
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={disconnectRevitAgent} disabled={!status?.connected || disconnecting}>
+          <PlugZapOff className="h-4 w-4" />
+          {disconnecting ? "Disconnecting..." : "Disconnect Revit agent"}
         </DropdownMenuItem>
         <DropdownMenuItem asChild>
           <a href={downloadUrl} target="_blank" rel="noreferrer">

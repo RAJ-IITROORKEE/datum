@@ -13,6 +13,14 @@ const CONFIG_PATH = process.env.DATUM_AGENT_CONFIG || path.join(APP_DIR, "config
 const LOG_PATH = path.join(APP_DIR, "agent.log");
 const LOCK_PATH = path.join(APP_DIR, "agent.lock");
 
+class ApiRequestError extends Error {
+  constructor(message, statusCode) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.statusCode = statusCode;
+  }
+}
+
 function parseArgs(argv) {
   const out = {};
   for (let i = 0; i < argv.length; i += 1) {
@@ -107,6 +115,32 @@ let token = args.token || process.env.REVIT_AGENT_TOKEN || config.token || "";
 let lockFd = null;
 let lastRevitOfflineLogAt = 0;
 let activeRevitPort = REVIT_PORTS[0];
+
+function saveRuntimeConfig() {
+  saveConfig({
+    datumUrl: DATUM_URL,
+    revitHost: REVIT_HOST,
+    revitPort: activeRevitPort,
+    revitPorts: REVIT_PORTS.join(","),
+    pollMs: POLL_MS,
+    heartbeatMs: HEARTBEAT_MS,
+    revitConnectTimeoutMs: REVIT_CONNECT_TIMEOUT_MS,
+    revitStartupWaitMs: REVIT_STARTUP_WAIT_MS,
+    revitRetryMs: REVIT_RETRY_MS,
+    token,
+  });
+}
+
+function isUnauthorizedError(error) {
+  return error instanceof ApiRequestError && error.statusCode === 401;
+}
+
+async function clearTokenAndRepair(reason) {
+  log(reason);
+  token = "";
+  saveRuntimeConfig();
+  await pairWithRetry();
+}
 
 function isPidRunning(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -271,7 +305,7 @@ async function api(path, options = {}) {
           }
 
           if ((res.statusCode || 500) >= 400) {
-            reject(new Error(data?.error || `HTTP ${res.statusCode || 500}`));
+            reject(new ApiRequestError(data?.error || `HTTP ${res.statusCode || 500}`, res.statusCode || 500));
             return;
           }
 
@@ -361,20 +395,7 @@ async function pairFlow() {
   });
 
   token = pairResult.token;
-
-  const nextConfig = {
-    datumUrl: DATUM_URL,
-    revitHost: REVIT_HOST,
-    revitPort: activeRevitPort,
-    revitPorts: REVIT_PORTS.join(","),
-    pollMs: POLL_MS,
-    heartbeatMs: HEARTBEAT_MS,
-    revitConnectTimeoutMs: REVIT_CONNECT_TIMEOUT_MS,
-    revitStartupWaitMs: REVIT_STARTUP_WAIT_MS,
-    revitRetryMs: REVIT_RETRY_MS,
-    token,
-  };
-  saveConfig(nextConfig);
+  saveRuntimeConfig();
 
   log("Paired successfully. Token saved to config.");
   log(`Config file: ${CONFIG_PATH}`);
@@ -407,6 +428,10 @@ async function heartbeatLoop() {
         }),
       });
     } catch (error) {
+      if (isUnauthorizedError(error)) {
+        await clearTokenAndRepair("Heartbeat unauthorized. Pairing token expired/revoked; re-pairing required.");
+        continue;
+      }
       log(`Heartbeat error: ${error.message}`);
     }
     await new Promise((resolve) => setTimeout(resolve, HEARTBEAT_MS));
@@ -448,6 +473,10 @@ async function commandLoop() {
         }
       }
     } catch (error) {
+      if (isUnauthorizedError(error)) {
+        await clearTokenAndRepair("Agent token unauthorized while polling commands. Re-pairing required.");
+        continue;
+      }
       log(`Command poll error: ${error.message}`);
     }
 
@@ -470,6 +499,7 @@ async function main() {
     console.log("  --revitConnectTimeoutMs <ms>");
     console.log("  --revitStartupWaitMs <ms>");
     console.log("  --revitRetryMs <ms>");
+    console.log("  --re-pair");
     console.log("  --help");
     return;
   }
@@ -477,8 +507,31 @@ async function main() {
   acquireSingleInstanceLock();
   setupSignalHandlers();
 
+  if (args["re-pair"] || args["force-pair"]) {
+    token = "";
+    saveRuntimeConfig();
+    log("Re-pair requested. Existing token cleared.");
+  }
+
   if (!token) {
     await pairWithRetry();
+  } else {
+    try {
+      await api("/api/revit/agent/heartbeat", {
+        method: "POST",
+        body: JSON.stringify({
+          deviceName: process.env.COMPUTERNAME || "Windows-PC",
+          os: process.platform,
+          agentVersion: AGENT_VERSION,
+        }),
+      });
+    } catch (error) {
+      if (isUnauthorizedError(error)) {
+        await clearTokenAndRepair("Saved token is no longer valid. Please enter a new pairing code.");
+      } else {
+        log(`Initial token check warning: ${error.message}`);
+      }
+    }
   }
 
   log(`Datum URL: ${DATUM_URL}`);
