@@ -30,6 +30,7 @@ class MCPClient {
   private tools: MCPTool[] | null = null;
   private sessionId: string | null = null;
   private initialized = false;
+  private initializePromise: Promise<void> | null = null;
 
   constructor() {
     this.baseUrl = process.env.MCP_SERVER_URL || "";
@@ -66,6 +67,19 @@ class MCPClient {
     this.sessionId = null;
     this.initialized = false;
     this.tools = null;
+    this.initializePromise = null;
+  }
+
+  private shouldRetrySession(responseStatus: number, responseBody: string): boolean {
+    const normalized = responseBody.toLowerCase();
+    if (responseStatus === 400 || responseStatus === 404 || responseStatus === 409) {
+      return true;
+    }
+    return (
+      normalized.includes("server not initialized") ||
+      normalized.includes("invalid or missing session") ||
+      normalized.includes("no valid session")
+    );
   }
 
   private async parseRpcResponse(response: Response): Promise<any> {
@@ -115,6 +129,22 @@ class MCPClient {
     if (this.initialized && this.sessionId) {
       return;
     }
+
+    if (this.initializePromise) {
+      await this.initializePromise;
+      return;
+    }
+
+    this.initializePromise = this.performInitialize();
+    try {
+      await this.initializePromise;
+    } finally {
+      this.initializePromise = null;
+    }
+  }
+
+  private async performInitialize(): Promise<void> {
+    this.refreshConfig();
 
     if (!this.baseUrl || !this.apiKey) {
       throw new Error("MCP server URL or API key is not configured");
@@ -176,7 +206,7 @@ class MCPClient {
     this.initialized = true;
   }
 
-  private async callRpc(method: string, params: Record<string, unknown>, retry = true): Promise<any> {
+  private async callRpc(method: string, params: Record<string, unknown>, retriesLeft = 2): Promise<any> {
     await this.ensureInitialized();
 
     const response = await fetch(`${this.baseUrl}/mcp`, {
@@ -196,15 +226,27 @@ class MCPClient {
     });
 
     if (!response.ok) {
-      if ((response.status === 400 || response.status === 404) && retry) {
+      const raw = await response.text();
+      if (retriesLeft > 0 && this.shouldRetrySession(response.status, raw)) {
         this.resetSession();
-        return this.callRpc(method, params, false);
+        return this.callRpc(method, params, retriesLeft - 1);
       }
       throw new Error(`MCP RPC failed (${method}): ${response.status}`);
     }
 
     const data = await this.parseRpcResponse(response);
     if (data?.error) {
+      const message = String(data.error.message || `MCP RPC error: ${method}`);
+      const normalized = message.toLowerCase();
+      if (
+        retriesLeft > 0 &&
+        (normalized.includes("server not initialized") ||
+          normalized.includes("invalid or missing session") ||
+          normalized.includes("no valid session"))
+      ) {
+        this.resetSession();
+        return this.callRpc(method, params, retriesLeft - 1);
+      }
       throw new Error(data.error.message || `MCP RPC error: ${method}`);
     }
 
@@ -321,9 +363,7 @@ class MCPClient {
 let mcpClient: MCPClient | null = null;
 
 export function getMCPClient(): MCPClient {
-  if (!mcpClient) {
-    mcpClient = new MCPClient();
-  }
+  mcpClient ??= new MCPClient();
   return mcpClient;
 }
 
