@@ -68,6 +68,47 @@ class MCPClient {
     this.tools = null;
   }
 
+  private async parseRpcResponse(response: Response): Promise<any> {
+    const contentType = response.headers.get("content-type") || "";
+    const raw = await response.text();
+
+    if (!raw) {
+      return null;
+    }
+
+    if (contentType.includes("application/json")) {
+      return JSON.parse(raw);
+    }
+
+    if (contentType.includes("text/event-stream")) {
+      const lines = raw.split(/\r?\n/);
+      const eventPayloads: string[] = [];
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        eventPayloads.push(trimmed.slice(5).trim());
+      }
+
+      for (const payload of eventPayloads) {
+        if (!payload || payload === "[DONE]") continue;
+        try {
+          return JSON.parse(payload);
+        } catch {
+          continue;
+        }
+      }
+
+      throw new Error("MCP server returned event-stream without JSON payload");
+    }
+
+    try {
+      return JSON.parse(raw);
+    } catch {
+      throw new Error("MCP server returned unsupported response format");
+    }
+  }
+
   private async ensureInitialized(): Promise<void> {
     this.refreshConfig();
 
@@ -162,7 +203,7 @@ class MCPClient {
       throw new Error(`MCP RPC failed (${method}): ${response.status}`);
     }
 
-    const data = await response.json();
+    const data = await this.parseRpcResponse(response);
     if (data?.error) {
       throw new Error(data.error.message || `MCP RPC error: ${method}`);
     }
@@ -177,8 +218,15 @@ class MCPClient {
     try {
       this.refreshConfig();
 
+      if (!this.baseUrl || !this.apiKey) {
+        return false;
+      }
+
       const response = await fetch(`${this.baseUrl}/health`, {
         method: "GET",
+        headers: {
+          ...this.getAuthHeaders(),
+        },
       });
       return response.ok;
     } catch (error) {

@@ -15,6 +15,9 @@ import { Check, Copy, Download, ExternalLink, Link2, RefreshCw } from "lucide-re
 
 type RevitStatusResponse = {
   connected: boolean;
+  latestAgentVersion?: string;
+  currentAgentVersion?: string | null;
+  updateAvailable?: boolean;
   activeSession: {
     id: string;
     deviceName?: string | null;
@@ -30,7 +33,7 @@ export function RevitConnectionMenu() {
   const [pairCodeExpiresAt, setPairCodeExpiresAt] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
-  const downloadUrl = "/downloads/DatumRevitAgent.exe";
+  const downloadUrl = "/api/revit/agent/download";
 
   const refreshStatus = async () => {
     const response = await fetch("/api/revit/status", { cache: "no-store" });
@@ -105,6 +108,19 @@ export function RevitConnectionMenu() {
             ? `Connected to ${status.activeSession?.deviceName || "device"}`
             : "No active local Revit agent"}
         </div>
+        {status?.updateAvailable ? (
+          <>
+            <div className="px-2 pb-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+              New agent version available ({status.currentAgentVersion || "unknown"} → {status.latestAgentVersion || "latest"}).
+            </div>
+            <DropdownMenuItem asChild>
+              <a href={downloadUrl} target="_blank" rel="noreferrer">
+                <Download className="h-4 w-4" />
+                Update agent now
+              </a>
+            </DropdownMenuItem>
+          </>
+        ) : null}
         <div className="px-2 pb-1.5 text-[11px] text-muted-foreground">
           Flow: Download agent, run on Revit machine, paste pairing code, keep Revit plugin ON.
         </div>

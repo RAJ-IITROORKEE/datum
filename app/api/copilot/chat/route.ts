@@ -97,7 +97,6 @@ export async function POST(req: NextRequest) {
     const manualToolPrefix = "/run";
 
     if (userText.startsWith(manualToolPrefix)) {
-      const encoder = new TextEncoder();
       const parts = userText.slice(manualToolPrefix.length).trim();
       const spaceIndex = parts.indexOf(" ");
 

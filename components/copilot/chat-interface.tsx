@@ -110,14 +110,20 @@ export function ChatInterface({
     decoder: TextDecoder,
     assistantMessage: Message
   ) => {
+    let buffer = "";
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) {
         break;
       }
 
-      const chunk = decoder.decode(value);
-      const lines = chunk.split("\n");
+      const chunk = decoder.decode(value, { stream: true });
+      buffer += chunk;
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
       const shouldStop = lines.some((line) =>
         processStreamLine(line, assistantMessage)
       );
@@ -125,6 +131,10 @@ export function ChatInterface({
       if (shouldStop) {
         break;
       }
+    }
+
+    if (buffer.trim().length > 0) {
+      processStreamLine(buffer.trim(), assistantMessage);
     }
   };
 
@@ -166,7 +176,7 @@ export function ChatInterface({
 
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
-      let assistantMessage: Message = {
+      const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
         content: "",

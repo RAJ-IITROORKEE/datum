@@ -20,6 +20,12 @@ This connects your local Revit plugin to cloud Copilot.
 
 Download and run `DatumRevitAgent.exe` on the Revit machine.
 
+Behavior in latest agent build:
+
+- Single-instance lock: launching it again will not create a second running terminal.
+- Revit socket retry: keeps retrying `127.0.0.1:8080` and auto-recovers if plugin starts late.
+- Config + token remain in `%APPDATA%\DatumRevitAgent\config.json`.
+
 If using command line:
 
 ```powershell
