@@ -11,9 +11,10 @@ export async function GET() {
     }
 
     const mcpClient = getMCPClient();
+    const connected = await mcpClient.testConnection();
     const tools = await mcpClient.listTools();
 
-    return NextResponse.json({ tools });
+    return NextResponse.json({ connected, tools, toolCount: tools.length });
   } catch (error) {
     console.error("Failed to list MCP tools:", error);
     return NextResponse.json(

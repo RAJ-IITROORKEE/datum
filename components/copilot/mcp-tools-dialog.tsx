@@ -29,6 +29,7 @@ interface MCPTool {
 export function MCPToolsDialog() {
   const [open, setOpen] = useState(false);
   const [tools, setTools] = useState<MCPTool[]>([]);
+  const [connected, setConnected] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedTool, setSelectedTool] = useState<MCPTool | null>(null);
@@ -45,6 +46,7 @@ export function MCPToolsDialog() {
       const response = await fetch("/api/copilot/mcp");
       if (response.ok) {
         const data = await response.json();
+        setConnected(Boolean(data.connected));
         setTools(data.tools || []);
       }
     } catch (error) {
@@ -76,9 +78,11 @@ export function MCPToolsDialog() {
         <DialogHeader>
           <DialogTitle>Revit MCP Tools</DialogTitle>
           <DialogDescription>
-            {tools.length > 0
-              ? `${tools.length} tools available for Revit automation and BIM tasks`
-              : "Loading available tools..."}
+            {connected === false
+              ? "MCP server disconnected"
+              : tools.length > 0
+                ? `${tools.length} tools available for Revit automation and BIM tasks`
+                : "Loading available tools..."}
           </DialogDescription>
         </DialogHeader>
 

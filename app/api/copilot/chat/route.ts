@@ -57,18 +57,26 @@ export async function POST(req: NextRequest) {
 
     // Get MCP tools information if enabled
     let mcpSystemMessage = "";
+    let mcpConnected = false;
+    let mcpToolCount = 0;
     if (enableMCP) {
       try {
         const mcpClient = getMCPClient();
+        const isHealthy = await mcpClient.testConnection();
         const tools = await mcpClient.listTools();
-        
-        if (tools.length > 0) {
+
+        mcpConnected = isHealthy && tools.length > 0;
+        mcpToolCount = tools.length;
+
+        if (mcpConnected) {
           const toolsList = tools.slice(0, 50).map(t => `- ${t.name}: ${t.description}`).join('\n');
-          mcpSystemMessage = `\n\nYou have access to ${tools.length} Revit MCP tools for BIM automation and architectural design:\n\n${toolsList}\n\nWhen users ask for Revit-related tasks, explain what can be done with these tools. The MCP server is connected and ready to execute Revit automation commands.`;
+          mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=CONNECTED\nMCP_TOOL_COUNT=${mcpToolCount}\n\nYou have access to ${mcpToolCount} Revit MCP tools for BIM automation and architectural design:\n\n${toolsList}\n\nWhen users ask for Revit-related tasks, explain what can be done with these tools. The MCP server is connected and ready to execute Revit automation commands. Do not claim MCP is disconnected when MCP_CONNECTION_STATUS=CONNECTED.`;
+        } else {
+          mcpSystemMessage = "\n\nMCP_CONNECTION_STATUS=DISCONNECTED\nNote: MCP tools connection is currently unavailable.";
         }
       } catch (error) {
         console.error("Failed to load MCP tools:", error);
-        mcpSystemMessage = "\n\nNote: MCP tools connection is currently unavailable.";
+        mcpSystemMessage = "\n\nMCP_CONNECTION_STATUS=DISCONNECTED\nNote: MCP tools connection is currently unavailable.";
       }
     }
 
