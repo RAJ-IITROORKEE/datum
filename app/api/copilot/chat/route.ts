@@ -2,6 +2,7 @@ import { OpenRouter } from "@openrouter/sdk";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { prisma } from "@/lib/prisma";
+import { getMCPClient } from "@/lib/mcp/client";
 
 const openrouter = new OpenRouter({
   apiKey: process.env.OPENROUTER_API_KEY!,
@@ -15,7 +16,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { messages, model, conversationId } = await req.json();
+    const { messages, model, conversationId, enableMCP = true } = await req.json();
 
     // Create or update conversation
     let conversation;
@@ -54,11 +55,38 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    // Get MCP tools information if enabled
+    let mcpSystemMessage = "";
+    if (enableMCP) {
+      try {
+        const mcpClient = getMCPClient();
+        const tools = await mcpClient.listTools();
+        
+        if (tools.length > 0) {
+          const toolsList = tools.slice(0, 50).map(t => `- ${t.name}: ${t.description}`).join('\n');
+          mcpSystemMessage = `\n\nYou have access to ${tools.length} Revit MCP tools for BIM automation and architectural design:\n\n${toolsList}\n\nWhen users ask for Revit-related tasks, explain what can be done with these tools. The MCP server is connected and ready to execute Revit automation commands.`;
+        }
+      } catch (error) {
+        console.error("Failed to load MCP tools:", error);
+        mcpSystemMessage = "\n\nNote: MCP tools connection is currently unavailable.";
+      }
+    }
+
+    // Prepare messages with system context
+    const systemMessage = `You are Datum AI Copilot, an intelligent assistant specialized in architecture, BIM, and Revit automation.${mcpSystemMessage}
+
+Provide helpful, accurate responses and guide users on how to use available tools when relevant.`;
+
+    const messagesWithSystem = [
+      { role: "system", content: systemMessage },
+      ...messages,
+    ];
+
     // Stream the response from OpenRouter
     const stream = await openrouter.chat.send({
       chatGenerationParams: {
         model: model || "anthropic/claude-sonnet-4.5",
-        messages,
+        messages: messagesWithSystem,
         stream: true,
       },
     });

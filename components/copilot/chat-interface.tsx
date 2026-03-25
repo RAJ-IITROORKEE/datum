@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ArrowUp, Plus } from "lucide-react";
 import { ModelSwitcher } from "./model-switcher";
+import { MCPToolsDialog } from "./mcp-tools-dialog";
 import { cn } from "@/lib/utils";
 
 interface Message {
@@ -153,7 +154,10 @@ export function ChatInterface({
     <div className="flex h-full flex-col bg-background">
       {/* Header with model switcher */}
       <div className="flex items-center justify-between border-b bg-card px-6 py-3">
-        <h1 className="text-lg font-semibold text-card-foreground">Copilot</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-lg font-semibold text-card-foreground">Copilot</h1>
+          <MCPToolsDialog />
+        </div>
         <ModelSwitcher value={model} onValueChange={setModel} />
       </div>
 
