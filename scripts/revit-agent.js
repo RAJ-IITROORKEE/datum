@@ -72,6 +72,14 @@ function saveConfig(nextConfig) {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(nextConfig, null, 2), "utf8");
 }
 
+function parsePortList(value) {
+  if (!value || typeof value !== "string") return [];
+  return value
+    .split(",")
+    .map((item) => Number(item.trim()))
+    .filter((port) => Number.isInteger(port) && port > 0 && port < 65536);
+}
+
 const args = parseArgs(process.argv.slice(2));
 const config = loadConfig();
 
@@ -79,7 +87,13 @@ const DATUM_URL = args.url || process.env.DATUM_URL || config.datumUrl || "http:
 const POLL_MS = Number(args.pollMs || process.env.AGENT_POLL_MS || config.pollMs || 1200);
 const HEARTBEAT_MS = Number(args.heartbeatMs || process.env.AGENT_HEARTBEAT_MS || config.heartbeatMs || 5000);
 const REVIT_HOST = args.revitHost || process.env.REVIT_HOST || config.revitHost || "127.0.0.1";
-const REVIT_PORT = Number(args.revitPort || process.env.REVIT_PORT || config.revitPort || 8080);
+const configuredRevitPort = Number(args.revitPort || process.env.REVIT_PORT || config.revitPort || 8080);
+const configuredRevitPorts = parsePortList(
+  args.revitPorts || process.env.REVIT_PORTS || config.revitPorts || ""
+);
+const REVIT_PORTS = Array.from(
+  new Set([configuredRevitPort, ...configuredRevitPorts, 8080, 8000].filter((port) => Number.isInteger(port)))
+);
 const REVIT_CONNECT_TIMEOUT_MS = Number(
   args.revitConnectTimeoutMs || process.env.REVIT_CONNECT_TIMEOUT_MS || config.revitConnectTimeoutMs || 3000
 );
@@ -92,6 +106,7 @@ const AGENT_VERSION = "1.1.0";
 let token = args.token || process.env.REVIT_AGENT_TOKEN || config.token || "";
 let lockFd = null;
 let lastRevitOfflineLogAt = 0;
+let activeRevitPort = REVIT_PORTS[0];
 
 function isPidRunning(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -186,7 +201,7 @@ function sendToLocalRevit(commandName, payload) {
       reject(new Error("Timed out waiting for Revit plugin response"));
     }, 120000);
 
-    socket.connect(REVIT_PORT, REVIT_HOST, () => {
+    socket.connect(activeRevitPort, REVIT_HOST, () => {
       const request = jsonRpcRequest(commandName, payload);
       socket.write(JSON.stringify(request));
     });
@@ -277,7 +292,7 @@ async function api(path, options = {}) {
   });
 }
 
-function canConnectToRevit(timeoutMs = REVIT_CONNECT_TIMEOUT_MS) {
+function canConnectToRevitPort(port, timeoutMs = REVIT_CONNECT_TIMEOUT_MS) {
   return new Promise((resolve) => {
     const socket = new net.Socket();
     let settled = false;
@@ -294,16 +309,27 @@ function canConnectToRevit(timeoutMs = REVIT_CONNECT_TIMEOUT_MS) {
     socket.once("timeout", () => done(false));
     socket.once("error", () => done(false));
 
-    socket.connect(REVIT_PORT, REVIT_HOST);
+    socket.connect(port, REVIT_HOST);
   });
+}
+
+async function findReachableRevitPort(timeoutMs = REVIT_CONNECT_TIMEOUT_MS) {
+  for (const port of REVIT_PORTS) {
+    const ok = await canConnectToRevitPort(port, timeoutMs);
+    if (ok) {
+      return port;
+    }
+  }
+  return null;
 }
 
 async function waitForRevitPluginReady(maxWaitMs, reasonLabel) {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < maxWaitMs) {
-    const ok = await canConnectToRevit();
-    if (ok) {
+    const reachablePort = await findReachableRevitPort();
+    if (reachablePort !== null) {
+      activeRevitPort = reachablePort;
       return true;
     }
 
@@ -311,7 +337,7 @@ async function waitForRevitPluginReady(maxWaitMs, reasonLabel) {
     if (now - lastRevitOfflineLogAt >= 10000) {
       lastRevitOfflineLogAt = now;
       log(
-        `Revit plugin not reachable on ${REVIT_HOST}:${REVIT_PORT} (${reasonLabel}). Retrying in ${REVIT_RETRY_MS}ms...`
+        `Revit plugin not reachable on ${REVIT_HOST} ports [${REVIT_PORTS.join(", ")}] (${reasonLabel}). Retrying in ${REVIT_RETRY_MS}ms...`
       );
     }
     await new Promise((resolve) => setTimeout(resolve, REVIT_RETRY_MS));
@@ -330,7 +356,7 @@ async function pairFlow() {
       code,
       deviceName: process.env.COMPUTERNAME || "Windows-PC",
       os: process.platform,
-          agentVersion: AGENT_VERSION,
+      agentVersion: AGENT_VERSION,
     }),
   });
 
@@ -339,7 +365,8 @@ async function pairFlow() {
   const nextConfig = {
     datumUrl: DATUM_URL,
     revitHost: REVIT_HOST,
-    revitPort: REVIT_PORT,
+    revitPort: activeRevitPort,
+    revitPorts: REVIT_PORTS.join(","),
     pollMs: POLL_MS,
     heartbeatMs: HEARTBEAT_MS,
     revitConnectTimeoutMs: REVIT_CONNECT_TIMEOUT_MS,
@@ -429,9 +456,6 @@ async function commandLoop() {
 }
 
 async function main() {
-  acquireSingleInstanceLock();
-  setupSignalHandlers();
-
   if (args.help) {
     console.log("Datum Revit Agent");
     console.log("Options:");
@@ -440,32 +464,35 @@ async function main() {
     console.log("  --pair-code <code>");
     console.log("  --revitHost <host>");
     console.log("  --revitPort <port>");
+    console.log("  --revitPorts <csv>");
     console.log("  --pollMs <ms>");
     console.log("  --heartbeatMs <ms>");
     console.log("  --revitConnectTimeoutMs <ms>");
     console.log("  --revitStartupWaitMs <ms>");
     console.log("  --revitRetryMs <ms>");
     console.log("  --help");
-    releaseSingleInstanceLock();
     return;
   }
+
+  acquireSingleInstanceLock();
+  setupSignalHandlers();
 
   if (!token) {
     await pairWithRetry();
   }
 
   log(`Datum URL: ${DATUM_URL}`);
-  log(`Revit plugin socket: ${REVIT_HOST}:${REVIT_PORT}`);
+  log(`Revit plugin sockets: ${REVIT_HOST} on [${REVIT_PORTS.join(", ")}]`);
   log(`Config: ${CONFIG_PATH}`);
   log(`Log file: ${LOG_PATH}`);
 
   const startupReady = await waitForRevitPluginReady(REVIT_STARTUP_WAIT_MS, "startup check");
   if (!startupReady) {
     log(
-      `Revit plugin is still not reachable on ${REVIT_HOST}:${REVIT_PORT}. Agent will continue and retry automatically.`
+      `Revit plugin is still not reachable on ${REVIT_HOST} ports [${REVIT_PORTS.join(", ")}]. Agent will continue and retry automatically.`
     );
   } else {
-    log("Revit plugin connection established.");
+    log(`Revit plugin connection established on ${REVIT_HOST}:${activeRevitPort}.`);
   }
 
   log("Agent running. Press Ctrl+C to stop.");
