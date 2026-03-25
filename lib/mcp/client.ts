@@ -28,10 +28,132 @@ class MCPClient {
   private baseUrl: string;
   private apiKey: string;
   private tools: MCPTool[] | null = null;
+  private sessionId: string | null = null;
+  private initialized = false;
 
   constructor() {
     this.baseUrl = process.env.MCP_SERVER_URL || "";
     this.apiKey = process.env.MCP_API_KEY || "";
+  }
+
+  private getAuthHeaders(): Record<string, string> {
+    return {
+      Authorization: `Bearer ${this.apiKey}`,
+      "X-API-Key": this.apiKey,
+    };
+  }
+
+  private getSessionHeaders(): Record<string, string> {
+    if (!this.sessionId) return {};
+    return {
+      "Mcp-Session-Id": this.sessionId,
+      "mcp-session-id": this.sessionId,
+    };
+  }
+
+  private resetSession(): void {
+    this.sessionId = null;
+    this.initialized = false;
+    this.tools = null;
+  }
+
+  private async ensureInitialized(): Promise<void> {
+    if (this.initialized && this.sessionId) {
+      return;
+    }
+
+    if (!this.baseUrl || !this.apiKey) {
+      throw new Error("MCP server URL or API key is not configured");
+    }
+
+    const initializeResponse = await fetch(`${this.baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        ...this.getAuthHeaders(),
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: {
+            name: "datum-copilot",
+            version: "1.0.0",
+          },
+        },
+      }),
+    });
+
+    if (!initializeResponse.ok) {
+      throw new Error(`MCP initialize failed: ${initializeResponse.status}`);
+    }
+
+    const sessionIdHeader =
+      initializeResponse.headers.get("mcp-session-id") ||
+      initializeResponse.headers.get("Mcp-Session-Id");
+
+    if (!sessionIdHeader) {
+      throw new Error("MCP initialize succeeded but no session ID was returned");
+    }
+
+    this.sessionId = sessionIdHeader;
+
+    // Optional but standards-friendly notification after initialize
+    await fetch(`${this.baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...this.getAuthHeaders(),
+        ...this.getSessionHeaders(),
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        method: "notifications/initialized",
+        params: {},
+      }),
+    }).catch(() => {
+      // Some servers may not require this notification; ignore failures.
+    });
+
+    this.initialized = true;
+  }
+
+  private async callRpc(method: string, params: Record<string, unknown>, retry = true): Promise<any> {
+    await this.ensureInitialized();
+
+    const response = await fetch(`${this.baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...this.getAuthHeaders(),
+        ...this.getSessionHeaders(),
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: Date.now(),
+        method,
+        params,
+      }),
+    });
+
+    if (!response.ok) {
+      if ((response.status === 400 || response.status === 404) && retry) {
+        this.resetSession();
+        return this.callRpc(method, params, false);
+      }
+      throw new Error(`MCP RPC failed (${method}): ${response.status}`);
+    }
+
+    const data = await response.json();
+    if (data?.error) {
+      throw new Error(data.error.message || `MCP RPC error: ${method}`);
+    }
+
+    return data?.result;
   }
 
   /**
@@ -57,7 +179,7 @@ class MCPClient {
       const response = await fetch(`${this.baseUrl}/status`, {
         method: "GET",
         headers: {
-          "X-API-Key": this.apiKey,
+          ...this.getAuthHeaders(),
         },
       });
 
@@ -81,26 +203,8 @@ class MCPClient {
     }
 
     try {
-      const response = await fetch(`${this.baseUrl}/mcp`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-API-Key": this.apiKey,
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "tools/list",
-          params: {},
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to list tools: ${response.statusText}`);
-      }
-
-      const data = await response.json();
-      const tools = data.result?.tools || [];
+      const result = await this.callRpc("tools/list", {});
+      const tools = result?.tools || [];
       this.tools = tools;
       return tools;
     } catch (error) {
@@ -114,39 +218,14 @@ class MCPClient {
    */
   async callTool(toolName: string, args: Record<string, any>): Promise<MCPToolResult> {
     try {
-      const response = await fetch(`${this.baseUrl}/mcp`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-API-Key": this.apiKey,
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: Date.now(),
-          method: "tools/call",
-          params: {
-            name: toolName,
-            arguments: args,
-          },
-        }),
+      const result = await this.callRpc("tools/call", {
+        name: toolName,
+        arguments: args,
       });
-
-      if (!response.ok) {
-        throw new Error(`Tool call failed: ${response.statusText}`);
-      }
-
-      const data = await response.json();
-
-      if (data.error) {
-        return {
-          success: false,
-          error: data.error.message || "Tool execution failed",
-        };
-      }
 
       return {
         success: true,
-        result: data.result,
+        result,
       };
     } catch (error) {
       console.error(`Failed to call MCP tool ${toolName}:`, error);
