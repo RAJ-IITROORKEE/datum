@@ -115,6 +115,7 @@ let token = args.token || process.env.REVIT_AGENT_TOKEN || config.token || "";
 let lockFd = null;
 let lastRevitOfflineLogAt = 0;
 let activeRevitPort = REVIT_PORTS[0];
+let isRepairingToken = false;
 
 function saveRuntimeConfig() {
   saveConfig({
@@ -132,14 +133,32 @@ function saveRuntimeConfig() {
 }
 
 function isUnauthorizedError(error) {
-  return error instanceof ApiRequestError && error.statusCode === 401;
+  if (error instanceof ApiRequestError && error.statusCode === 401) {
+    return true;
+  }
+
+  const message = String(error?.message || "").toLowerCase();
+  return (
+    message.includes("invalid agent token") ||
+    message.includes("missing bearer token") ||
+    message.includes("unauthorized")
+  );
 }
 
 async function clearTokenAndRepair(reason) {
+  if (isRepairingToken) {
+    return;
+  }
+
+  isRepairingToken = true;
   log(reason);
-  token = "";
-  saveRuntimeConfig();
-  await pairWithRetry();
+  try {
+    token = "";
+    saveRuntimeConfig();
+    await pairWithRetry();
+  } finally {
+    isRepairingToken = false;
+  }
 }
 
 function isPidRunning(pid) {
@@ -535,6 +554,7 @@ async function main() {
   }
 
   log(`Datum URL: ${DATUM_URL}`);
+  log(`Agent version: ${AGENT_VERSION}`);
   log(`Revit plugin sockets: ${REVIT_HOST} on [${REVIT_PORTS.join(", ")}]`);
   log(`Config: ${CONFIG_PATH}`);
   log(`Log file: ${LOG_PATH}`);
