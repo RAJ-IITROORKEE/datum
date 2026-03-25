@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ArrowUp, PanelLeft, Plus } from "lucide-react";
 import { ModelSwitcher } from "./model-switcher";
 import { MCPToolsDialog } from "./mcp-tools-dialog";
+import { RevitConnectionMenu } from "./revit-connection-menu";
 import { cn } from "@/lib/utils";
 
 interface Message {
@@ -205,8 +206,11 @@ export function ChatInterface({
           </div>
           <MCPToolsDialog />
         </div>
-        <div className="w-37.5 sm:w-50">
+        <div className="flex items-center gap-2">
+          <RevitConnectionMenu />
+          <div className="w-37.5 sm:w-50">
           <ModelSwitcher value={model} onValueChange={setModel} />
+          </div>
         </div>
       </div>
 
@@ -292,7 +296,7 @@ export function ChatInterface({
                 handleSubmit(e);
               }
             }}
-            placeholder="How can I help you today?"
+            placeholder="How can I help you today? (Tip: /run get_levels_list {})"
             className="min-h-15 w-full resize-none border-0 bg-transparent text-foreground outline-none focus-visible:ring-0"
             disabled={isLoading}
           />

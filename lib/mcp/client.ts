@@ -36,6 +36,17 @@ class MCPClient {
     this.apiKey = process.env.MCP_API_KEY || "";
   }
 
+  private refreshConfig(): void {
+    const nextBaseUrl = process.env.MCP_SERVER_URL || "";
+    const nextApiKey = process.env.MCP_API_KEY || "";
+
+    if (nextBaseUrl !== this.baseUrl || nextApiKey !== this.apiKey) {
+      this.baseUrl = nextBaseUrl;
+      this.apiKey = nextApiKey;
+      this.resetSession();
+    }
+  }
+
   private getAuthHeaders(): Record<string, string> {
     return {
       Authorization: `Bearer ${this.apiKey}`,
@@ -58,6 +69,8 @@ class MCPClient {
   }
 
   private async ensureInitialized(): Promise<void> {
+    this.refreshConfig();
+
     if (this.initialized && this.sessionId) {
       return;
     }
@@ -129,6 +142,7 @@ class MCPClient {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
         ...this.getAuthHeaders(),
         ...this.getSessionHeaders(),
       },
@@ -161,6 +175,8 @@ class MCPClient {
    */
   async testConnection(): Promise<boolean> {
     try {
+      this.refreshConfig();
+
       const response = await fetch(`${this.baseUrl}/health`, {
         method: "GET",
       });
@@ -176,6 +192,8 @@ class MCPClient {
    */
   async getStatus(): Promise<any> {
     try {
+      this.refreshConfig();
+
       const response = await fetch(`${this.baseUrl}/status`, {
         method: "GET",
         headers: {

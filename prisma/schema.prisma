@@ -36,6 +36,19 @@ enum ConversationType {
   USER_REPLY
 }
 
+enum AgentStatus {
+  ONLINE
+  OFFLINE
+}
+
+enum CommandJobStatus {
+  PENDING
+  SENT
+  SUCCEEDED
+  FAILED
+  TIMEOUT
+}
+
 model ContactUs {
   id               String           @id @default(auto()) @map("_id") @db.ObjectId
   name             String
@@ -120,4 +133,57 @@ model ChatMessage {
 
   @@map("chat_messages")
   @@index([conversationId])
+}
+
+model RevitAgentPairing {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  clerkUserId String
+  code        String   @unique
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdAt   DateTime @default(now())
+
+  @@map("revit_agent_pairings")
+  @@index([clerkUserId])
+  @@index([expiresAt])
+}
+
+model RevitAgentSession {
+  id           String      @id @default(auto()) @map("_id") @db.ObjectId
+  clerkUserId  String
+  tokenHash    String      @unique
+  deviceName   String?
+  os           String?
+  agentVersion String?
+  status       AgentStatus @default(ONLINE)
+  lastSeenAt   DateTime    @default(now())
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  jobs         RevitCommandJob[]
+
+  @@map("revit_agent_sessions")
+  @@index([clerkUserId])
+  @@index([lastSeenAt])
+}
+
+model RevitCommandJob {
+  id             String           @id @default(auto()) @map("_id") @db.ObjectId
+  clerkUserId    String
+  agentSessionId String?          @db.ObjectId
+  commandName    String
+  payload        Json
+  status         CommandJobStatus @default(PENDING)
+  result         Json?
+  error          String?
+  completedAt    DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  agentSession   RevitAgentSession? @relation(fields: [agentSessionId], references: [id], onDelete: SetNull)
+
+  @@map("revit_command_jobs")
+  @@index([clerkUserId, status])
+  @@index([agentSessionId])
+  @@index([createdAt])
 }

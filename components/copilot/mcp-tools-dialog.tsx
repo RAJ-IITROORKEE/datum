@@ -30,6 +30,8 @@ export function MCPToolsDialog() {
   const [open, setOpen] = useState(false);
   const [tools, setTools] = useState<MCPTool[]>([]);
   const [connected, setConnected] = useState<boolean | null>(null);
+  const [revitConnected, setRevitConnected] = useState<boolean>(false);
+  const [activeDevice, setActiveDevice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedTool, setSelectedTool] = useState<MCPTool | null>(null);
@@ -47,6 +49,8 @@ export function MCPToolsDialog() {
       if (response.ok) {
         const data = await response.json();
         setConnected(Boolean(data.connected));
+        setRevitConnected(Boolean(data.revitConnected));
+        setActiveDevice(typeof data.activeDevice === "string" ? data.activeDevice : null);
         setTools(data.tools || []);
       }
     } catch (error) {
@@ -83,6 +87,8 @@ export function MCPToolsDialog() {
               : tools.length > 0
                 ? `${tools.length} tools available for Revit automation and BIM tasks`
                 : "Loading available tools..."}
+            {connected ? ` • Revit ${revitConnected ? "connected" : "not connected"}` : ""}
+            {activeDevice ? ` (${activeDevice})` : ""}
           </DialogDescription>
         </DialogHeader>
 
