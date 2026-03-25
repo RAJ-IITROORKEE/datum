@@ -3,8 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { ArrowUp, Plus } from "lucide-react";
+import { ArrowUp, PanelLeft, Plus } from "lucide-react";
 import { ModelSwitcher } from "./model-switcher";
 import { MCPToolsDialog } from "./mcp-tools-dialog";
 import { cn } from "@/lib/utils";
@@ -19,12 +18,14 @@ interface Message {
 interface ChatInterfaceProps {
   conversationId: string | null;
   onConversationCreated: (id: string) => void;
+  onOpenSidebar?: () => void;
 }
 
 export function ChatInterface({
   conversationId,
   onConversationCreated,
-}: ChatInterfaceProps) {
+  onOpenSidebar,
+}: Readonly<ChatInterfaceProps>) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -58,6 +59,71 @@ export function ChatInterface({
       }
     } catch (error) {
       console.error("Failed to fetch messages:", error);
+    }
+  };
+
+  const updateAssistantMessage = (assistantMessage: Message) => {
+    setMessages((prev) => {
+      const newMessages = [...prev];
+      newMessages[newMessages.length - 1] = { ...assistantMessage };
+      return newMessages;
+    });
+  };
+
+  const processStreamLine = (
+    line: string,
+    assistantMessage: Message
+  ): boolean => {
+    if (!line.startsWith("data: ")) {
+      return false;
+    }
+
+    const data = line.slice(6);
+    if (data === "[DONE]") {
+      return true;
+    }
+
+    try {
+      const parsed = JSON.parse(data) as {
+        content?: string;
+        conversationId?: string;
+      };
+
+      if (parsed.content) {
+        assistantMessage.content += parsed.content;
+        updateAssistantMessage(assistantMessage);
+      }
+
+      if (parsed.conversationId && !conversationId) {
+        onConversationCreated(parsed.conversationId);
+      }
+    } catch (error) {
+      console.error("Failed to parse stream chunk:", error);
+    }
+
+    return false;
+  };
+
+  const streamAssistantResponse = async (
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    decoder: TextDecoder,
+    assistantMessage: Message
+  ) => {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      const chunk = decoder.decode(value);
+      const lines = chunk.split("\n");
+      const shouldStop = lines.some((line) =>
+        processStreamLine(line, assistantMessage)
+      );
+
+      if (shouldStop) {
+        break;
+      }
     }
   };
 
@@ -108,39 +174,7 @@ export function ChatInterface({
       setMessages((prev) => [...prev, assistantMessage]);
 
       if (reader) {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          const chunk = decoder.decode(value);
-          const lines = chunk.split("\n");
-
-          for (const line of lines) {
-            if (line.startsWith("data: ")) {
-              const data = line.slice(6);
-              if (data === "[DONE]") break;
-
-              try {
-                const parsed = JSON.parse(data);
-                if (parsed.content) {
-                  assistantMessage.content += parsed.content;
-                  setMessages((prev) => {
-                    const newMessages = [...prev];
-                    newMessages[newMessages.length - 1] = {
-                      ...assistantMessage,
-                    };
-                    return newMessages;
-                  });
-                }
-                if (parsed.conversationId && !conversationId) {
-                  onConversationCreated(parsed.conversationId);
-                }
-              } catch (e) {
-                // Ignore parse errors
-              }
-            }
-          }
-        }
+        await streamAssistantResponse(reader, decoder, assistantMessage);
       }
     } catch (error) {
       console.error("Error sending message:", error);
@@ -153,16 +187,31 @@ export function ChatInterface({
   return (
     <div className="flex h-full flex-col bg-background">
       {/* Header with model switcher */}
-      <div className="flex items-center justify-between border-b bg-card px-6 py-3">
-        <div className="flex items-center gap-3">
-          <h1 className="text-lg font-semibold text-card-foreground">Copilot</h1>
+      <div className="flex items-center justify-between gap-3 border-b bg-card px-3 py-3 sm:px-4 md:px-6">
+        <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="md:hidden"
+            onClick={onOpenSidebar}
+            aria-label="Open chat history"
+          >
+            <PanelLeft className="h-5 w-5" />
+          </Button>
+          <img src="/fav.png" alt="Datumm" className="h-8 w-auto rounded-full" />
+          <div className="leading-tight">
+            <h1 className="text-base font-semibold text-card-foreground sm:text-lg">Datumm Copilot</h1>
+            <p className="text-xs text-blue-600 dark:text-blue-400">AI Assistant</p>
+          </div>
           <MCPToolsDialog />
         </div>
-        <ModelSwitcher value={model} onValueChange={setModel} />
+        <div className="w-37.5 sm:w-50">
+          <ModelSwitcher value={model} onValueChange={setModel} />
+        </div>
       </div>
 
       {/* Messages */}
-      <ScrollArea className="flex-1 p-4" ref={scrollRef}>
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4">
         {messages.length === 0 ? (
           <div className="flex h-full items-center justify-center">
             <div className="text-center">
@@ -182,8 +231,8 @@ export function ChatInterface({
                 className={cn(
                   "rounded-2xl p-4",
                   message.role === "user"
-                    ? "bg-[#DDD9CE] dark:bg-[#393937] ml-auto max-w-[80%]"
-                    : "bg-card"
+                    ? "ml-auto max-w-[85%] bg-blue-600 text-white sm:max-w-[80%]"
+                    : "bg-card border border-blue-100 dark:border-blue-900/40"
                 )}
               >
                 <div className="flex gap-3">
@@ -191,14 +240,19 @@ export function ChatInterface({
                     className={cn(
                       "flex h-8 w-8 shrink-0 items-center justify-center rounded-full font-semibold",
                       message.role === "user"
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-[#ae5630] text-white"
+                        ? "bg-blue-700 text-white"
+                        : "bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-200"
                     )}
                   >
                     {message.role === "user" ? "U" : "AI"}
                   </div>
                   <div className="flex-1 space-y-2 overflow-hidden">
-                    <p className="whitespace-pre-wrap break-words text-foreground">
+                    <p
+                      className={cn(
+                        "wrap-break-word whitespace-pre-wrap",
+                        message.role === "user" ? "text-white" : "text-foreground"
+                      )}
+                    >
                       {message.content}
                     </p>
                   </div>
@@ -206,9 +260,9 @@ export function ChatInterface({
               </div>
             ))}
             {isLoading && (
-              <div className="rounded-2xl bg-card p-4">
+              <div className="rounded-2xl border border-blue-100 bg-card p-4 dark:border-blue-900/40">
                 <div className="flex gap-3">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#ae5630] text-white font-semibold">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 font-semibold text-blue-700 dark:bg-blue-500/20 dark:text-blue-200">
                     AI
                   </div>
                   <div className="flex items-center gap-1">
@@ -221,13 +275,13 @@ export function ChatInterface({
             )}
           </div>
         )}
-      </ScrollArea>
+      </div>
 
       {/* Input */}
-      <div className="mx-auto w-full max-w-3xl p-4">
+      <div className="mx-auto w-full max-w-3xl p-3 sm:p-4">
         <form
           onSubmit={handleSubmit}
-          className="flex flex-col gap-2 rounded-2xl bg-card p-2 shadow-lg border"
+          className="flex flex-col gap-2 rounded-2xl border border-blue-100 bg-card p-2 shadow-lg dark:border-blue-900/40"
         >
           <Textarea
             value={input}
@@ -239,7 +293,7 @@ export function ChatInterface({
               }
             }}
             placeholder="How can I help you today?"
-            className="min-h-[60px] w-full resize-none border-0 bg-transparent text-foreground outline-none focus-visible:ring-0"
+            className="min-h-15 w-full resize-none border-0 bg-transparent text-foreground outline-none focus-visible:ring-0"
             disabled={isLoading}
           />
           <div className="flex items-center justify-between gap-2">
@@ -259,7 +313,7 @@ export function ChatInterface({
             <Button
               type="submit"
               size="icon"
-              className="h-8 w-8 rounded-lg bg-[#ae5630] hover:bg-[#c4633a] text-white"
+              className="h-8 w-8 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
               disabled={!input.trim() || isLoading}
             >
               <ArrowUp className="h-4 w-4" />

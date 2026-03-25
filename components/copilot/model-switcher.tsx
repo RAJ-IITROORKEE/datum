@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import {
   Select,
   SelectContent,
@@ -32,10 +31,13 @@ const MODELS = [
   },
 ];
 
-export function ModelSwitcher({ value, onValueChange }: ModelSwitcherProps) {
+export function ModelSwitcher({
+  value,
+  onValueChange,
+}: Readonly<ModelSwitcherProps>) {
   return (
     <Select value={value} onValueChange={onValueChange}>
-      <SelectTrigger className="w-[200px] bg-background">
+      <SelectTrigger className="w-full min-w-0 bg-background">
         <SelectValue placeholder="Select model" />
       </SelectTrigger>
       <SelectContent>
