@@ -162,35 +162,53 @@ export async function POST(req: NextRequest) {
     // Get MCP tools information if enabled
     let mcpSystemMessage = "";
     let mcpConnected = false;
+    let mcpCatalogAvailable = false;
     let mcpToolCount = 0;
     let mcpReason = "";
     if (enableMCP) {
       try {
         const mcpClient = getMCPClient();
         const isHealthy = await mcpClient.testConnection();
-        const tools = await mcpClient.listTools();
+        mcpConnected = isHealthy;
 
-        mcpConnected = isHealthy && tools.length > 0;
-        mcpToolCount = tools.length;
+        let tools: Array<{ name: string; description: string }> = [];
+        try {
+          tools = await mcpClient.listTools();
+          mcpToolCount = tools.length;
+          mcpCatalogAvailable = true;
+        } catch (toolsError) {
+          mcpCatalogAvailable = false;
+          mcpReason = toolsError instanceof Error ? toolsError.message : "MCP tools list failed";
+          if (!mcpConnected && mcpReason.includes("MCP RPC failed (tools/list):")) {
+            mcpConnected = true;
+          }
+        }
 
-        if (mcpConnected) {
-          const toolsList = tools.slice(0, 50).map(t => `- ${t.name}: ${t.description}`).join('\n');
-          mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=CONNECTED\nMCP_TOOL_COUNT=${mcpToolCount}\nREVIT_AGENT_STATUS=${revitConnected ? "CONNECTED" : "DISCONNECTED"}\n\nYou have access to ${mcpToolCount} Revit MCP tools for BIM automation and architectural design:\n\n${toolsList}\n\nWhen users ask for Revit-related tasks:
+        if (mcpCatalogAvailable) {
+          const toolsList = tools.slice(0, 50).map((t) => `- ${t.name}: ${t.description}`).join("\n");
+          mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=${mcpConnected ? "CONNECTED" : "DISCONNECTED"}\nMCP_CATALOG_STATUS=AVAILABLE\nMCP_TOOL_COUNT=${mcpToolCount}\nREVIT_AGENT_STATUS=${revitConnected ? "CONNECTED" : "DISCONNECTED"}\n\nYou have access to ${mcpToolCount} Revit MCP tools for BIM automation and architectural design:\n\n${toolsList}\n\nWhen users ask for Revit-related tasks:
 - If REVIT_AGENT_STATUS=CONNECTED, you can state that execution from Copilot is available.
 - If REVIT_AGENT_STATUS=DISCONNECTED, instruct user to connect Datum Revit Agent and keep Revit open.
 Do not claim MCP is disconnected when MCP_CONNECTION_STATUS=CONNECTED.`;
         } else {
-          mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=DISCONNECTED\nREVIT_AGENT_STATUS=${revitConnected ? "CONNECTED" : "DISCONNECTED"}\nNote: MCP tools connection is currently unavailable.`;
+          mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=${mcpConnected ? "CONNECTED" : "DISCONNECTED"}\nMCP_CATALOG_STATUS=UNAVAILABLE\nMCP_TOOL_COUNT=0\nREVIT_AGENT_STATUS=${revitConnected ? "CONNECTED" : "DISCONNECTED"}\nNote: MCP tool catalog is currently unavailable, but direct /run execution may still work via connected Revit Agent.`;
         }
       } catch (error) {
         console.error("Failed to load MCP tools:", error);
         mcpReason = error instanceof Error ? error.message : "Unknown MCP error";
-        mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=DISCONNECTED\nREVIT_AGENT_STATUS=${revitConnected ? "CONNECTED" : "DISCONNECTED"}\nNote: MCP tools connection is currently unavailable.`;
+        mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=DISCONNECTED\nMCP_CATALOG_STATUS=UNAVAILABLE\nMCP_TOOL_COUNT=0\nREVIT_AGENT_STATUS=${revitConnected ? "CONNECTED" : "DISCONNECTED"}\nNote: MCP tools connection is currently unavailable.`;
       }
     }
 
     if (isStatusIntent(userText)) {
-      const statusText = `Connection Status\n- MCP Server: ${mcpConnected ? "Connected" : "Disconnected"}\n- MCP Tools: ${mcpToolCount}\n- Revit Agent: ${revitConnected ? "Connected" : "Disconnected"}${recentAgentSession?.deviceName ? ` (${recentAgentSession.deviceName})` : ""}${mcpConnected ? "" : mcpReason ? `\n- MCP Reason: ${mcpReason}` : ""}\n\nTo execute a tool now, use:\n/run <tool_name> <json_args>\nExample: /run get_levels_list {}`;
+      const mcpServerText = mcpConnected ? "Connected" : "Disconnected";
+      const mcpCatalogText = mcpCatalogAvailable ? `Available (${mcpToolCount} tools)` : "Unavailable";
+      const revitAgentText = revitConnected ? "Connected" : "Disconnected";
+      const directRunText = revitConnected ? "Available" : "Unavailable";
+      const deviceSuffix = recentAgentSession?.deviceName ? ` (${recentAgentSession.deviceName})` : "";
+      const mcpReasonLine = mcpReason ? `\n- MCP Reason: ${mcpReason}` : "";
+
+      const statusText = `Connection Status\n- MCP Server: ${mcpServerText}\n- MCP Catalog: ${mcpCatalogText}\n- Revit Agent: ${revitAgentText}${deviceSuffix}\n- Direct /run Execution: ${directRunText}${mcpReasonLine}\n\nTo execute a tool now, use:\n/run <tool_name> <json_args>\nExample: /run get_levels_list {}`;
 
       await prisma.chatMessage.create({
         data: {

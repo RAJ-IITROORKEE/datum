@@ -11,7 +11,6 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Wrench, Search, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -30,6 +29,8 @@ export function MCPToolsDialog() {
   const [open, setOpen] = useState(false);
   const [tools, setTools] = useState<MCPTool[]>([]);
   const [connected, setConnected] = useState<boolean | null>(null);
+  const [catalogAvailable, setCatalogAvailable] = useState<boolean | null>(null);
+  const [reason, setReason] = useState<string | null>(null);
   const [revitConnected, setRevitConnected] = useState<boolean>(false);
   const [activeDevice, setActiveDevice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -49,6 +50,8 @@ export function MCPToolsDialog() {
       if (response.ok) {
         const data = await response.json();
         setConnected(Boolean(data.connected));
+        setCatalogAvailable(Boolean(data.catalogAvailable));
+        setReason(typeof data.reason === "string" && data.reason.length > 0 ? data.reason : null);
         setRevitConnected(Boolean(data.revitConnected));
         setActiveDevice(typeof data.activeDevice === "string" ? data.activeDevice : null);
         setTools(data.tools || []);
@@ -66,6 +69,19 @@ export function MCPToolsDialog() {
       tool.description.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  const statusDescription =
+    connected === false
+      ? "MCP server disconnected"
+      : catalogAvailable === false
+        ? "MCP server connected, but tool catalog unavailable"
+        : tools.length > 0
+          ? `${tools.length} tools available for Revit automation and BIM tasks`
+          : "Loading available tools...";
+
+  const revitStatusText = connected
+    ? ` • Revit ${revitConnected ? "connected" : "not connected"}`
+    : "";
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
@@ -82,13 +98,10 @@ export function MCPToolsDialog() {
         <DialogHeader>
           <DialogTitle>Revit MCP Tools</DialogTitle>
           <DialogDescription>
-            {connected === false
-              ? "MCP server disconnected"
-              : tools.length > 0
-                ? `${tools.length} tools available for Revit automation and BIM tasks`
-                : "Loading available tools..."}
-            {connected ? ` • Revit ${revitConnected ? "connected" : "not connected"}` : ""}
+            {statusDescription}
+            {revitStatusText}
             {activeDevice ? ` (${activeDevice})` : ""}
+            {catalogAvailable === false && reason ? ` • ${reason}` : ""}
           </DialogDescription>
         </DialogHeader>
 

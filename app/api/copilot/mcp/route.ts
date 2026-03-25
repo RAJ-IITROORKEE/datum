@@ -4,6 +4,10 @@ import { getMCPClient } from "@/lib/mcp/client";
 import { enqueueCommandForUser, waitForCommandResult } from "@/lib/revit-agent/jobs";
 import { prisma } from "@/lib/prisma";
 
+function indicatesReachableCatalogError(message: string): boolean {
+  return message.includes("MCP RPC failed (tools/list):");
+}
+
 export async function GET() {
   try {
     const { userId } = await auth();
@@ -13,8 +17,21 @@ export async function GET() {
     }
 
     const mcpClient = getMCPClient();
-    const connected = await mcpClient.testConnection();
-    const tools = await mcpClient.listTools();
+    let connected = await mcpClient.testConnection();
+
+    let tools: Array<{ name: string; description: string }> = [];
+    let catalogAvailable = false;
+    let reason = "";
+    try {
+      tools = await mcpClient.listTools();
+      catalogAvailable = true;
+    } catch (error) {
+      catalogAvailable = false;
+      reason = error instanceof Error ? error.message : "MCP tools list failed";
+      if (!connected && indicatesReachableCatalogError(reason)) {
+        connected = true;
+      }
+    }
 
     const recentSession = await prisma.revitAgentSession.findFirst({
       where: { clerkUserId: userId },
@@ -26,10 +43,12 @@ export async function GET() {
 
     return NextResponse.json({
       connected,
+      catalogAvailable,
       tools,
       toolCount: tools.length,
       revitConnected,
       activeDevice: recentSession?.deviceName || null,
+      reason,
     });
   } catch (error) {
     console.error("Failed to list MCP tools:", error);
@@ -62,11 +81,14 @@ export async function POST(req: Request) {
     }
 
     const mcpClient = getMCPClient();
-    const tools = await mcpClient.listTools();
-    const toolExists = tools.some((tool) => tool.name === toolName);
-
-    if (!toolExists) {
-      return NextResponse.json({ error: `Unknown tool: ${toolName}` }, { status: 400 });
+    try {
+      const tools = await mcpClient.listTools();
+      const toolExists = tools.some((tool) => tool.name === toolName);
+      if (!toolExists) {
+        return NextResponse.json({ error: `Unknown tool: ${toolName}` }, { status: 400 });
+      }
+    } catch (error) {
+      console.warn("MCP catalog unavailable, proceeding with direct execution:", error);
     }
 
     const job = await enqueueCommandForUser(userId, toolName, args || {});
