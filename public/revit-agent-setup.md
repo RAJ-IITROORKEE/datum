@@ -4,7 +4,7 @@
 2. Download and run `DatumRevitAgent.exe` from:
 
 ```text
-/downloads/DatumRevitAgent.exe
+/api/revit/agent/download
 ```
 
 on the same machine as Revit.
