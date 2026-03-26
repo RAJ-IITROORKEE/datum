@@ -601,6 +601,8 @@ interface AgenticPlan {
 
 const AGENTIC_PLANNING_PROMPT = `You are an expert BIM/Revit automation planner. Analyze the user's request and create a concrete execution plan using the available tools.
 
+CRITICAL: You MUST create an executable plan. Do NOT ask for more information unless absolutely necessary for safety/correctness. Make reasonable assumptions when details are missing (e.g., use default level if not specified, use standard dimensions if not provided).
+
 AVAILABLE TOOLS:
 {TOOLS_LIST}
 
@@ -612,11 +614,15 @@ PREVIOUS CONTEXT (if any):
 
 INSTRUCTIONS:
 1. Analyze what the user wants to accomplish
-2. If you need clarification before proceeding, set needsMoreInfo=true and provide a clarificationQuestion
+2. ONLY set needsMoreInfo=true if the request is completely vague or could cause serious errors without clarification
 3. Otherwise, create a step-by-step plan using ONLY the available tools listed above
-4. Each step must have exact toolName (from the list), args (valid JSON), and description
-5. For building tasks, ALWAYS start with get_levels_list to get valid level IDs
-6. Use the tool names EXACTLY as listed - do not invent tools
+4. Make reasonable assumptions:
+   - If no level specified, plan to call get_levels_list first to get a valid level
+   - If dimensions not specified, use reasonable defaults (e.g., 3000mm wall height, 10000mm x 8000mm room)
+   - If object type not specified, use generic/default types
+5. Each step must have exact toolName (from the list), args (valid JSON), and description
+6. For building tasks, ALWAYS start with get_levels_list to get valid level IDs
+7. Use the tool names EXACTLY as listed - do not invent tools
 
 Respond with ONLY valid JSON in this format:
 {
@@ -632,15 +638,24 @@ Respond with ONLY valid JSON in this format:
   ]
 }
 
-If the request is vague or needs clarification:
+ONLY use this format if request is dangerously vague:
 {
-  "analysis": "Analysis of ambiguity",
+  "analysis": "Analysis of why clarification is critical",
   "needsMoreInfo": true,
-  "clarificationQuestion": "What specific information do you need?",
+  "clarificationQuestion": "What specific critical information do you need?",
   "steps": []
-}`;
+}
+
+Remember: Prefer execution over clarification. Make reasonable assumptions.`;
 
 const AGENTIC_CONTINUATION_PROMPT = `You are a BIM/Revit automation executor. Based on the previous step's result, determine the next action.
+
+CRITICAL: You are an AGENT, not a chatbot. Your job is to COMPLETE the goal, not to stop and report. ONLY stop if:
+1. The goal is 100% achieved
+2. An unrecoverable error occurred
+3. You need different tools that aren't available
+
+Otherwise, you MUST continue execution.
 
 AVAILABLE TOOLS:
 {TOOLS_LIST}
@@ -659,11 +674,12 @@ REMAINING PLANNED STEPS:
 
 INSTRUCTIONS:
 1. Analyze the last result - was it successful?
-2. Determine if you should:
-   - Continue with the next planned step (possibly adjusting args based on results)
-   - Add new steps based on what you learned
-   - Stop because the goal is achieved
-   - Stop due to an error that can't be recovered
+2. If successful and there are remaining steps, action MUST be "continue"
+3. If successful but you need to adjust the plan based on results, use "add_steps" or modify nextStep args
+4. ONLY use "goal_achieved" if the ORIGINAL GOAL is 100% complete (not just one step)
+5. ONLY use "error_stop" if there's an unrecoverable error
+
+BIAS TOWARD CONTINUATION. You are an autonomous agent - keep working until the job is done.
 
 Respond with ONLY valid JSON:
 {
@@ -769,24 +785,24 @@ async function determineNextAgenticAction(
 function requiresAgenticMode(userText: string): boolean {
   const text = userText.toLowerCase();
   
-  // Complex multi-step building tasks
-  const hasBuildVerb = containsAny(text, ["create", "build", "make", "design", "construct", "generate", "add"]);
-  const hasMultipleObjects = containsAny(text, [
-    "house", "apartment", "flat", "layout", "floor plan",
-    "walls and", "rooms and", "doors and", "windows and",
-    "complete", "full", "entire", "whole"
+  // ANY build/create/make request with Revit objects should be agentic
+  const hasBuildVerb = containsAny(text, ["create", "build", "make", "design", "construct", "generate", "add", "draw", "model", "place"]);
+  const hasRevitObject = containsAny(text, [
+    "wall", "walls", "door", "doors", "window", "windows", "room", "rooms",
+    "floor", "floors", "ceiling", "roof", "column", "columns", "beam", "beams",
+    "house", "apartment", "flat", "layout", "floor plan", "plan", "building",
+    "bhk", "bedroom", "kitchen", "bathroom", "living", "dining"
   ]);
   
-  // Explicit multi-step indicators
+  // Multi-step indicators
   const hasMultiStepIndicators = containsAny(text, [
-    "step by step", "automatically", "end to end", "complete the",
-    "then add", "and then", "followed by", "after that"
+    "step by step", "automatically", "end to end", "complete", "entire", "whole",
+    "then", "after that", "followed by", "and also", "with"
   ]);
   
-  // Room/space configurations
-  const hasRoomConfig = /\d\s*(?:bhk|bedroom|room|bath)/.test(text);
-  
-  return (hasBuildVerb && hasMultipleObjects) || hasMultiStepIndicators || hasRoomConfig;
+  // If user wants to build/create ANY Revit object, use agentic mode
+  // This ensures ALL execution requests go through the agent, not just complex ones
+  return (hasBuildVerb && hasRevitObject) || hasMultiStepIndicators;
 }
 
 async function buildImmediateSseResponse(content: string, conversationId: string) {

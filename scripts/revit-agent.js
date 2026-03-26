@@ -16,7 +16,7 @@ const APP_DIR = path.join(os.homedir(), "AppData", "Roaming", "DatumRevitAgent")
 const CONFIG_PATH = process.env.DATUM_AGENT_CONFIG || path.join(APP_DIR, "config.json");
 const LOG_PATH = path.join(APP_DIR, "agent.log");
 const LOCK_PATH = path.join(APP_DIR, "agent.lock");
-const AGENT_VERSION = "1.3.0";
+const AGENT_VERSION = "1.4.0";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TERMINAL COLORS & STYLING
@@ -360,6 +360,51 @@ function releaseSingleInstanceLock() {
   }
 }
 
+function killExistingAgent() {
+  try {
+    if (!fs.existsSync(LOCK_PATH)) {
+      log("No existing agent process found", "info");
+      return false;
+    }
+
+    const lockRaw = fs.readFileSync(LOCK_PATH, "utf8");
+    const lockData = JSON.parse(lockRaw);
+    const pid = Number(lockData?.pid);
+
+    if (!isPidRunning(pid)) {
+      log("Lock file exists but process is not running, cleaning up", "info");
+      fs.unlinkSync(LOCK_PATH);
+      return false;
+    }
+
+    log(`Killing existing agent process (PID: ${pid})`, "warning");
+    process.kill(pid, "SIGTERM");
+    
+    // Wait for process to die
+    let attempts = 0;
+    while (isPidRunning(pid) && attempts < 10) {
+      attempts++;
+      const sleepMs = 500;
+      const sleepUntil = Date.now() + sleepMs;
+      while (Date.now() < sleepUntil) {
+        // busy wait
+      }
+    }
+
+    if (isPidRunning(pid)) {
+      log("Process still running, forcing kill", "warning");
+      process.kill(pid, "SIGKILL");
+    }
+
+    fs.unlinkSync(LOCK_PATH);
+    log("Existing agent process terminated", "success");
+    return true;
+  } catch (error) {
+    log(`Failed to kill existing agent: ${error.message}`, "error");
+    return false;
+  }
+}
+
 function acquireSingleInstanceLock() {
   ensureConfigDir();
 
@@ -377,7 +422,7 @@ function acquireSingleInstanceLock() {
     const lockRaw = fs.readFileSync(LOCK_PATH, "utf8");
     const lockData = JSON.parse(lockRaw);
     if (isPidRunning(Number(lockData?.pid))) {
-      throw new Error("Datum Revit Agent is already running. Close the existing agent terminal first.");
+      throw new Error("Datum Revit Agent is already running. Use --kill to stop it, or close the existing agent terminal first.");
     }
     fs.unlinkSync(LOCK_PATH);
   } catch (error) {
@@ -840,8 +885,21 @@ async function main() {
     console.log("    --pollMs <ms>                 Command poll interval (default: 1200)");
     console.log("    --heartbeatMs <ms>            Heartbeat interval (default: 5000)");
     console.log("    --re-pair                     Clear saved token and re-pair");
+    console.log("    --kill                        Kill existing agent process");
     console.log("    --help                        Show this help");
     printSectionEnd();
+    return;
+  }
+
+  // Handle --kill flag
+  if (args.kill) {
+    printBanner();
+    const killed = killExistingAgent();
+    if (!killed) {
+      console.log("");
+      console.log(c.info("  No agent process to kill."));
+    }
+    console.log("");
     return;
   }
 
