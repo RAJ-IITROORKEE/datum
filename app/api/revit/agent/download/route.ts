@@ -20,7 +20,7 @@ export async function GET(req: Request) {
 
   const downloadsDir = path.join(process.cwd(), "public", "downloads");
   if (fs.existsSync(downloadsDir)) {
-    const installerCandidates = fs
+    const installerExeCandidates = fs
       .readdirSync(downloadsDir)
       .filter((file) => /^DatumRevitAgent-Installer-v.+\.exe$/i.test(file))
       .map((file) => {
@@ -30,8 +30,8 @@ export async function GET(req: Request) {
       })
       .sort((a, b) => b.mtimeMs - a.mtimeMs);
 
-    if (installerCandidates.length > 0) {
-      const latestInstaller = installerCandidates[0];
+    if (installerExeCandidates.length > 0) {
+      const latestInstaller = installerExeCandidates[0];
       const target = new URL(`/downloads/${latestInstaller.file}`, req.url);
       target.searchParams.set("v", String(Math.floor(latestInstaller.mtimeMs)));
 
@@ -40,18 +40,48 @@ export async function GET(req: Request) {
         headers: noCacheHeaders,
       });
     }
-  }
 
-  const localExe = path.join(process.cwd(), "public", "downloads", "DatumRevitAgent.exe");
-  if (fs.existsSync(localExe)) {
-    const stats = fs.statSync(localExe);
-    const target = new URL("/downloads/DatumRevitAgent.exe", req.url);
-    target.searchParams.set("v", String(Math.floor(stats.mtimeMs)));
+    const installerZipCandidates = fs
+      .readdirSync(downloadsDir)
+      .filter((file) => /^DatumRevitAgent-Installer-v.+\.zip$/i.test(file))
+      .map((file) => {
+        const fullPath = path.join(downloadsDir, file);
+        const stats = fs.statSync(fullPath);
+        return { file, mtimeMs: stats.mtimeMs };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
 
-    return NextResponse.redirect(target, {
-      status: 302,
-      headers: noCacheHeaders,
-    });
+    if (installerZipCandidates.length > 0) {
+      const latestInstallerZip = installerZipCandidates[0];
+      const target = new URL(`/downloads/${latestInstallerZip.file}`, req.url);
+      target.searchParams.set("v", String(Math.floor(latestInstallerZip.mtimeMs)));
+
+      return NextResponse.redirect(target, {
+        status: 302,
+        headers: noCacheHeaders,
+      });
+    }
+
+    const exeCandidates = fs
+      .readdirSync(downloadsDir)
+      .filter((file) => /^DatumRevitAgent(?!-Installer).*\.exe$/i.test(file))
+      .map((file) => {
+        const fullPath = path.join(downloadsDir, file);
+        const stats = fs.statSync(fullPath);
+        return { file, mtimeMs: stats.mtimeMs };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+    if (exeCandidates.length > 0) {
+      const latestExe = exeCandidates[0];
+      const target = new URL(`/downloads/${latestExe.file}`, req.url);
+      target.searchParams.set("v", String(Math.floor(latestExe.mtimeMs)));
+
+      return NextResponse.redirect(target, {
+        status: 302,
+        headers: noCacheHeaders,
+      });
+    }
   }
 
   return NextResponse.redirect(new URL("/revit-agent-setup.md", req.url), {
