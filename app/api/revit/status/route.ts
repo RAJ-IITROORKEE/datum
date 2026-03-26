@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 
 const ONLINE_WINDOW_MS = 30_000;
 const SESSION_TTL_MS = 60 * 60 * 1000; // 1 hour session validity
-const LATEST_AGENT_VERSION = process.env.REVIT_AGENT_LATEST_VERSION || "1.3.0";
+const LATEST_AGENT_VERSION = process.env.REVIT_AGENT_LATEST_VERSION || "1.4.1";
 
 function toVersionParts(version: string): number[] {
   return version
