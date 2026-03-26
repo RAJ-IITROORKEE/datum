@@ -582,6 +582,213 @@ function resolveAutoToolCall(
   return null;
 }
 
+// ============================================================================
+// LLM-DRIVEN AGENTIC ORCHESTRATION
+// ============================================================================
+
+interface AgenticPlanStep {
+  toolName: string;
+  args: Record<string, unknown>;
+  description: string;
+}
+
+interface AgenticPlan {
+  analysis: string;
+  steps: AgenticPlanStep[];
+  needsMoreInfo: boolean;
+  clarificationQuestion?: string;
+}
+
+const AGENTIC_PLANNING_PROMPT = `You are an expert BIM/Revit automation planner. Analyze the user's request and create a concrete execution plan using the available tools.
+
+AVAILABLE TOOLS:
+{TOOLS_LIST}
+
+USER'S REQUEST:
+{USER_REQUEST}
+
+PREVIOUS CONTEXT (if any):
+{CONTEXT}
+
+INSTRUCTIONS:
+1. Analyze what the user wants to accomplish
+2. If you need clarification before proceeding, set needsMoreInfo=true and provide a clarificationQuestion
+3. Otherwise, create a step-by-step plan using ONLY the available tools listed above
+4. Each step must have exact toolName (from the list), args (valid JSON), and description
+5. For building tasks, ALWAYS start with get_levels_list to get valid level IDs
+6. Use the tool names EXACTLY as listed - do not invent tools
+
+Respond with ONLY valid JSON in this format:
+{
+  "analysis": "Brief analysis of what user wants",
+  "needsMoreInfo": false,
+  "clarificationQuestion": null,
+  "steps": [
+    {
+      "toolName": "exact_tool_name",
+      "args": { "param": "value" },
+      "description": "What this step accomplishes"
+    }
+  ]
+}
+
+If the request is vague or needs clarification:
+{
+  "analysis": "Analysis of ambiguity",
+  "needsMoreInfo": true,
+  "clarificationQuestion": "What specific information do you need?",
+  "steps": []
+}`;
+
+const AGENTIC_CONTINUATION_PROMPT = `You are a BIM/Revit automation executor. Based on the previous step's result, determine the next action.
+
+AVAILABLE TOOLS:
+{TOOLS_LIST}
+
+ORIGINAL GOAL:
+{ORIGINAL_GOAL}
+
+COMPLETED STEPS:
+{COMPLETED_STEPS}
+
+LAST STEP RESULT:
+{LAST_RESULT}
+
+REMAINING PLANNED STEPS:
+{REMAINING_STEPS}
+
+INSTRUCTIONS:
+1. Analyze the last result - was it successful?
+2. Determine if you should:
+   - Continue with the next planned step (possibly adjusting args based on results)
+   - Add new steps based on what you learned
+   - Stop because the goal is achieved
+   - Stop due to an error that can't be recovered
+
+Respond with ONLY valid JSON:
+{
+  "action": "continue" | "add_steps" | "goal_achieved" | "error_stop",
+  "reasoning": "Why this action",
+  "nextStep": { "toolName": "...", "args": {...}, "description": "..." } | null,
+  "additionalSteps": [...] | null,
+  "finalSummary": "Summary if goal_achieved or error_stop" | null
+}`;
+
+async function generateAgenticPlan(
+  userRequest: string,
+  toolsList: string,
+  context: string
+): Promise<AgenticPlan> {
+  const prompt = AGENTIC_PLANNING_PROMPT
+    .replace("{TOOLS_LIST}", toolsList)
+    .replace("{USER_REQUEST}", userRequest)
+    .replace("{CONTEXT}", context || "None");
+
+  try {
+    const response = await openrouter.chat.send({
+      chatGenerationParams: {
+        model: "anthropic/claude-sonnet-4",
+        messages: [
+          { role: "user", content: prompt }
+        ],
+        maxTokens: 2000,
+        temperature: 0.1,
+      },
+    });
+
+    const content = response.choices?.[0]?.message?.content || "";
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return { analysis: "Failed to parse plan", steps: [], needsMoreInfo: true, clarificationQuestion: "Could you please rephrase your request?" };
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]) as AgenticPlan;
+    return parsed;
+  } catch (error) {
+    console.error("Agentic planning error:", error);
+    return { analysis: "Planning failed", steps: [], needsMoreInfo: true, clarificationQuestion: "An error occurred. Please try again." };
+  }
+}
+
+interface AgenticContinuation {
+  action: "continue" | "add_steps" | "goal_achieved" | "error_stop";
+  reasoning: string;
+  nextStep: AgenticPlanStep | null;
+  additionalSteps: AgenticPlanStep[] | null;
+  finalSummary: string | null;
+}
+
+async function determineNextAgenticAction(
+  originalGoal: string,
+  completedSteps: Array<{ step: AgenticPlanStep; result: unknown }>,
+  lastResult: unknown,
+  remainingSteps: AgenticPlanStep[],
+  toolsList: string
+): Promise<AgenticContinuation> {
+  const completedSummary = completedSteps.map((s, i) => 
+    `Step ${i + 1}: ${s.step.toolName} - ${s.step.description}\nResult: ${JSON.stringify(s.result).slice(0, 500)}`
+  ).join("\n\n");
+
+  const remainingSummary = remainingSteps.map((s, i) =>
+    `Step ${i + 1}: ${s.toolName} - ${s.description}`
+  ).join("\n");
+
+  const prompt = AGENTIC_CONTINUATION_PROMPT
+    .replace("{TOOLS_LIST}", toolsList)
+    .replace("{ORIGINAL_GOAL}", originalGoal)
+    .replace("{COMPLETED_STEPS}", completedSummary || "None")
+    .replace("{LAST_RESULT}", JSON.stringify(lastResult).slice(0, 1000))
+    .replace("{REMAINING_STEPS}", remainingSummary || "None");
+
+  try {
+    const response = await openrouter.chat.send({
+      chatGenerationParams: {
+        model: "anthropic/claude-sonnet-4",
+        messages: [
+          { role: "user", content: prompt }
+        ],
+        maxTokens: 1500,
+        temperature: 0.1,
+      },
+    });
+
+    const content = response.choices?.[0]?.message?.content || "";
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return { action: "error_stop", reasoning: "Failed to parse continuation", nextStep: null, additionalSteps: null, finalSummary: "Could not determine next action" };
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]) as AgenticContinuation;
+    return parsed;
+  } catch (error) {
+    console.error("Agentic continuation error:", error);
+    return { action: "error_stop", reasoning: "Continuation failed", nextStep: null, additionalSteps: null, finalSummary: "An error occurred during execution" };
+  }
+}
+
+function requiresAgenticMode(userText: string): boolean {
+  const text = userText.toLowerCase();
+  
+  // Complex multi-step building tasks
+  const hasBuildVerb = containsAny(text, ["create", "build", "make", "design", "construct", "generate", "add"]);
+  const hasMultipleObjects = containsAny(text, [
+    "house", "apartment", "flat", "layout", "floor plan",
+    "walls and", "rooms and", "doors and", "windows and",
+    "complete", "full", "entire", "whole"
+  ]);
+  
+  // Explicit multi-step indicators
+  const hasMultiStepIndicators = containsAny(text, [
+    "step by step", "automatically", "end to end", "complete the",
+    "then add", "and then", "followed by", "after that"
+  ]);
+  
+  // Room/space configurations
+  const hasRoomConfig = /\d\s*(?:bhk|bedroom|room|bath)/.test(text);
+  
+  return (hasBuildVerb && hasMultipleObjects) || hasMultiStepIndicators || hasRoomConfig;
+}
+
 async function buildImmediateSseResponse(content: string, conversationId: string) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
@@ -1809,6 +2016,347 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
           } catch (error) {
             console.error("Agentic execution error:", error);
             controller.error(error);
+          }
+        },
+      });
+
+      return new Response(readableStream, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        },
+      });
+    }
+
+    // ========================================================================
+    // LLM-DRIVEN AGENTIC MODE
+    // For complex multi-step tasks, use the LLM to plan and execute dynamically
+    // ========================================================================
+    const shouldUseAgenticMode = revitConnected && mcpCatalogAvailable && requiresAgenticMode(userText);
+
+    if (shouldUseAgenticMode) {
+      const encoder = new TextEncoder();
+      let finalResponse = "";
+
+      const readableStream = new ReadableStream({
+        async start(controller) {
+          try {
+            // Build context from previous messages
+            const contextMessages = messages.slice(-5).map((m: { role: string; content: string }) => 
+              `${m.role}: ${typeof m.content === 'string' ? m.content.slice(0, 300) : JSON.stringify(m.content).slice(0, 300)}`
+            ).join("\n");
+
+            const toolsList = mcpTools.map((t) => `- ${t.name}: ${t.description}`).join("\n");
+
+            // Phase 1: Generate plan
+            emitAgentProgress(
+              controller,
+              encoder,
+              toAgentEvent({
+                kind: "analysis",
+                stage: "planning",
+                message: "Analyzing request and generating execution plan...",
+              })
+            );
+
+            const plan = await generateAgenticPlan(userText, toolsList, contextMessages);
+
+            if (plan.needsMoreInfo) {
+              // Need clarification from user
+              finalResponse = plan.clarificationQuestion || "Could you provide more details about what you'd like to accomplish?";
+              emitAgentProgress(
+                controller,
+                encoder,
+                toAgentEvent({
+                  kind: "analysis",
+                  stage: "completed",
+                  message: "Need more information",
+                  details: plan.analysis,
+                })
+              );
+              emitContentChunk(controller, encoder, finalResponse);
+              await prisma.chatMessage.create({
+                data: {
+                  conversationId: conversation.id,
+                  role: "assistant",
+                  content: finalResponse,
+                },
+              });
+              controller.enqueue(encoder.encode(createSseData({ conversationId: conversation.id })));
+              controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+              controller.close();
+              return;
+            }
+
+            if (plan.steps.length === 0) {
+              // No executable steps found
+              finalResponse = `I understand you want to: ${plan.analysis}\n\nHowever, I couldn't identify specific tools to execute for this request. Could you be more specific about what Revit elements you'd like to create or modify?`;
+              emitContentChunk(controller, encoder, finalResponse);
+              await prisma.chatMessage.create({
+                data: {
+                  conversationId: conversation.id,
+                  role: "assistant",
+                  content: finalResponse,
+                },
+              });
+              controller.enqueue(encoder.encode(createSseData({ conversationId: conversation.id })));
+              controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+              controller.close();
+              return;
+            }
+
+            // Build todo plan for UI
+            let todoPlan: AgentTodoStep[] = plan.steps.map((step, index) => ({
+              id: `step-${index + 1}`,
+              title: step.description,
+              toolName: step.toolName,
+              status: "pending" as AgentTodoStepStatus,
+            }));
+
+            emitAgentProgress(
+              controller,
+              encoder,
+              toAgentEvent({
+                kind: "plan",
+                stage: "planning",
+                message: `Created ${plan.steps.length}-step execution plan`,
+                details: plan.analysis,
+                plan: cloneTodoPlan(todoPlan),
+              })
+            );
+
+            // Phase 2: Execute steps with feedback loop
+            const completedSteps: Array<{ step: AgenticPlanStep; result: unknown }> = [];
+            let remainingSteps = [...plan.steps];
+            let stepNumber = 0;
+            const maxSteps = 15; // Safety limit
+            const toolOutcomes: Array<{ toolName: string; status: "success" | "failed"; reason?: string }> = [];
+
+            while (remainingSteps.length > 0 && stepNumber < maxSteps) {
+              const currentStep = remainingSteps.shift()!;
+              stepNumber++;
+
+              // Update plan status
+              const stepId = `step-${completedSteps.length + 1}`;
+              todoPlan = todoPlan.map((s) => 
+                s.id === stepId ? { ...s, status: "in_progress" as AgentTodoStepStatus } : s
+              );
+
+              emitAgentProgress(
+                controller,
+                encoder,
+                toAgentEvent({
+                  kind: "plan",
+                  stage: "executing",
+                  message: `Executing step ${completedSteps.length + 1}/${todoPlan.length}: ${currentStep.toolName}`,
+                  toolName: currentStep.toolName,
+                  plan: cloneTodoPlan(todoPlan),
+                })
+              );
+
+              emitAgentProgress(
+                controller,
+                encoder,
+                toAgentEvent({
+                  kind: "tool",
+                  stage: "executing",
+                  message: `Running ${currentStep.toolName}`,
+                  toolName: currentStep.toolName,
+                  details: summarizeForDetails(currentStep.args, 700),
+                })
+              );
+
+              // Execute the tool
+              const resolvedToolName = resolveToolAlias(currentStep.toolName);
+              let normalizedArgs = currentStep.args;
+
+              // Apply normalizations for create_wall
+              if (resolvedToolName === "create_wall") {
+                normalizedArgs = normalizeCreateWallArgs(normalizedArgs);
+                
+                // If missing baseLevelId, try to resolve it
+                if (hasMissingBaseLevelId(normalizedArgs)) {
+                  const levelId = await resolveDefaultLevelIdForUser(userId);
+                  if (levelId) {
+                    normalizedArgs = applyBaseLevelIdToWalls(normalizedArgs, levelId);
+                  }
+                }
+              }
+
+              const job = await enqueueCommandForUser(userId, resolvedToolName, normalizedArgs);
+              const result = await waitForCommandResult(job.id);
+              const toolError = result.success ? getToolExecutionError(result.result) : null;
+
+              if (result.success && !toolError) {
+                completedSteps.push({ step: currentStep, result: result.result });
+                toolOutcomes.push({ toolName: currentStep.toolName, status: "success" });
+
+                todoPlan = todoPlan.map((s) =>
+                  s.id === stepId ? { ...s, status: "completed" as AgentTodoStepStatus } : s
+                );
+
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "tool",
+                    stage: "completed",
+                    message: `${currentStep.toolName} completed successfully`,
+                    toolName: currentStep.toolName,
+                    details: summarizeForDetails(result.result, 500),
+                  })
+                );
+
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "plan",
+                    stage: remainingSteps.length > 0 ? "executing" : "completed",
+                    message: `Step ${completedSteps.length}/${todoPlan.length} completed`,
+                    plan: cloneTodoPlan(todoPlan),
+                  })
+                );
+
+                // If more steps, let LLM decide if we should continue or adapt
+                if (remainingSteps.length > 0 || completedSteps.length < todoPlan.length) {
+                  const continuation = await determineNextAgenticAction(
+                    userText,
+                    completedSteps,
+                    result.result,
+                    remainingSteps,
+                    toolsList
+                  );
+
+                  if (continuation.action === "goal_achieved") {
+                    finalResponse = continuation.finalSummary || "Goal achieved successfully!";
+                    break;
+                  } else if (continuation.action === "error_stop") {
+                    finalResponse = continuation.finalSummary || "Execution stopped due to an error.";
+                    break;
+                  } else if (continuation.action === "add_steps" && continuation.additionalSteps) {
+                    // Add new steps to the plan
+                    const newSteps = continuation.additionalSteps;
+                    remainingSteps = [...remainingSteps, ...newSteps];
+                    
+                    // Update todo plan with new steps
+                    newSteps.forEach((step, i) => {
+                      todoPlan.push({
+                        id: `step-${todoPlan.length + 1}`,
+                        title: step.description,
+                        toolName: step.toolName,
+                        status: "pending",
+                      });
+                    });
+
+                    emitAgentProgress(
+                      controller,
+                      encoder,
+                      toAgentEvent({
+                        kind: "plan",
+                        stage: "executing",
+                        message: `Added ${newSteps.length} additional steps based on results`,
+                        plan: cloneTodoPlan(todoPlan),
+                      })
+                    );
+                  }
+                  // For "continue", just proceed with remaining steps
+                }
+              } else {
+                // Step failed
+                const errorMessage = String(toolError || result.error || "Unknown error");
+                toolOutcomes.push({ toolName: currentStep.toolName, status: "failed", reason: errorMessage });
+
+                todoPlan = todoPlan.map((s) =>
+                  s.id === stepId ? { ...s, status: "failed" as AgentTodoStepStatus, reason: errorMessage } : s
+                );
+
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "tool",
+                    stage: "error",
+                    message: `${currentStep.toolName} failed: ${errorMessage}`,
+                    toolName: currentStep.toolName,
+                    details: summarizeForDetails({ error: errorMessage }),
+                  })
+                );
+
+                // Let LLM decide whether to continue or stop
+                const continuation = await determineNextAgenticAction(
+                  userText,
+                  completedSteps,
+                  { error: errorMessage },
+                  remainingSteps,
+                  toolsList
+                );
+
+                if (continuation.action === "error_stop") {
+                  finalResponse = continuation.finalSummary || `Execution stopped: ${errorMessage}`;
+                  break;
+                }
+                // Otherwise continue with remaining steps
+              }
+            }
+
+            // Generate final summary if not already set
+            if (!finalResponse) {
+              const successCount = toolOutcomes.filter((o) => o.status === "success").length;
+              const failCount = toolOutcomes.filter((o) => o.status === "failed").length;
+              
+              finalResponse = `Agentic execution completed.\n\n**Summary:**\n- Steps executed: ${completedSteps.length}\n- Successful: ${successCount}\n- Failed: ${failCount}\n\n${formatToolOutcomeSummary(toolOutcomes)}`;
+            }
+
+            emitAgentProgress(
+              controller,
+              encoder,
+              toAgentEvent({
+                kind: "plan",
+                stage: toolOutcomes.some((o) => o.status === "failed") ? "error" : "completed",
+                message: "Execution plan finished",
+                plan: cloneTodoPlan(todoPlan),
+              })
+            );
+
+            emitContentChunk(controller, encoder, finalResponse);
+
+            await prisma.chatMessage.create({
+              data: {
+                conversationId: conversation.id,
+                role: "assistant",
+                content: finalResponse,
+              },
+            });
+
+            controller.enqueue(encoder.encode(createSseData({ conversationId: conversation.id })));
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
+          } catch (error) {
+            console.error("Agentic mode error:", error);
+            const errorMessage = error instanceof Error ? error.message : "Unknown error";
+            emitAgentProgress(
+              controller,
+              encoder,
+              toAgentEvent({
+                kind: "analysis",
+                stage: "error",
+                message: `Agentic execution failed: ${errorMessage}`,
+              })
+            );
+            const fallbackResponse = `I encountered an error during agentic execution: ${errorMessage}`;
+            emitContentChunk(controller, encoder, fallbackResponse);
+            await prisma.chatMessage.create({
+              data: {
+                conversationId: conversation.id,
+                role: "assistant",
+                content: fallbackResponse,
+              },
+            });
+            controller.enqueue(encoder.encode(createSseData({ conversationId: conversation.id })));
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
           }
         },
       });
