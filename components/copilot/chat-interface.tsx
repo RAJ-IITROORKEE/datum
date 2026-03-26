@@ -1,10 +1,25 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { ArrowUp, Bot, Brain, ChevronDown, PanelLeft, Plus, Wrench } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { 
+  AlertCircle, 
+  ArrowUp, 
+  Bot, 
+  Brain, 
+  CheckCircle2,
+  ChevronDown, 
+  Loader2,
+  PanelLeft, 
+  Plus, 
+  RefreshCw,
+  Unplug,
+  Wrench,
+  Zap 
+} from "lucide-react";
 import { ModelSwitcher } from "./model-switcher";
 import { MCPToolsDialog } from "./mcp-tools-dialog";
 import { RevitConnectionMenu } from "./revit-connection-menu";
@@ -33,6 +48,14 @@ interface AgentProgressEvent {
   }>;
 }
 
+interface ConnectionStatus {
+  mcpConnected: boolean;
+  revitConnected: boolean;
+  activeDevice: string | null;
+  toolCount: number;
+  lastChecked: number;
+}
+
 interface ChatInterfaceProps {
   conversationId: string | null;
   onConversationCreated: (id: string) => void;
@@ -51,7 +74,65 @@ export function ChatInterface({
   const [agentEvents, setAgentEvents] = useState<AgentProgressEvent[]>([]);
   const [analysisOpen, setAnalysisOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>({
+    mcpConnected: false,
+    revitConnected: false,
+    activeDevice: null,
+    toolCount: 0,
+    lastChecked: 0,
+  });
+  const [connectionLostDuringExecution, setConnectionLostDuringExecution] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const connectionCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Check connection status
+  const checkConnectionStatus = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/copilot/mcp?t=${Date.now()}`, { cache: "no-store" });
+      if (response.ok) {
+        const data = await response.json();
+        const newStatus: ConnectionStatus = {
+          mcpConnected: data.connected,
+          revitConnected: data.revitConnected,
+          activeDevice: data.activeDevice,
+          toolCount: data.toolCount || 0,
+          lastChecked: Date.now(),
+        };
+        
+        // Check if connection was lost during execution
+        if (isLoading && connectionStatus.revitConnected && !newStatus.revitConnected) {
+          setConnectionLostDuringExecution(true);
+          // Add error event to agent events
+          setAgentEvents((prev) => [
+            ...prev,
+            {
+              stage: "error",
+              message: "Connection to Revit Agent lost during execution",
+              kind: "tool",
+              details: "The local Revit Agent disconnected. Ensure Revit is running and the agent terminal is active.",
+              timestamp: new Date().toISOString(),
+            },
+          ]);
+        }
+        
+        setConnectionStatus(newStatus);
+      }
+    } catch (error) {
+      console.error("Failed to check connection status:", error);
+    }
+  }, [isLoading, connectionStatus.revitConnected]);
+
+  // Start connection monitoring
+  useEffect(() => {
+    checkConnectionStatus();
+    connectionCheckIntervalRef.current = setInterval(checkConnectionStatus, 5000);
+    
+    return () => {
+      if (connectionCheckIntervalRef.current) {
+        clearInterval(connectionCheckIntervalRef.current);
+      }
+    };
+  }, [checkConnectionStatus]);
 
   // Fetch messages when conversation changes
   useEffect(() => {
@@ -204,6 +285,7 @@ export function ChatInterface({
     setAgentEvents([]);
     setAnalysisOpen(false);
     setToolsOpen(false);
+    setConnectionLostDuringExecution(false);
 
     try {
       const allMessages = [...messages, userMessage].map((msg) => ({
@@ -245,7 +327,49 @@ export function ChatInterface({
       setMessages((prev) => prev.slice(0, -1));
     } finally {
       setIsLoading(false);
+      setConnectionLostDuringExecution(false);
     }
+  };
+
+  // Connection status indicator component
+  const ConnectionIndicator = () => {
+    const isFullyConnected = connectionStatus.mcpConnected && connectionStatus.revitConnected;
+    const isPartiallyConnected = connectionStatus.mcpConnected && !connectionStatus.revitConnected;
+    
+    if (connectionLostDuringExecution) {
+      return (
+        <div className="flex items-center gap-2 rounded-lg bg-red-500/10 px-3 py-1.5 text-xs">
+          <Unplug className="h-3.5 w-3.5 text-red-500" />
+          <span className="font-medium text-red-600 dark:text-red-400">Connection Lost</span>
+        </div>
+      );
+    }
+    
+    if (isFullyConnected) {
+      return (
+        <div className="flex items-center gap-2 rounded-lg bg-green-500/10 px-3 py-1.5 text-xs">
+          <Zap className="h-3.5 w-3.5 text-green-500" />
+          <span className="font-medium text-green-600 dark:text-green-400">Ready</span>
+          <span className="text-muted-foreground">({connectionStatus.toolCount} tools)</span>
+        </div>
+      );
+    }
+    
+    if (isPartiallyConnected) {
+      return (
+        <div className="flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-1.5 text-xs">
+          <AlertCircle className="h-3.5 w-3.5 text-amber-500" />
+          <span className="font-medium text-amber-600 dark:text-amber-400">Revit Offline</span>
+        </div>
+      );
+    }
+    
+    return (
+      <div className="flex items-center gap-2 rounded-lg bg-muted px-3 py-1.5 text-xs">
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+        <span className="text-muted-foreground">Connecting...</span>
+      </div>
+    );
   };
 
   return (
@@ -270,6 +394,9 @@ export function ChatInterface({
           <div className="hidden sm:block">
             <MCPToolsDialog />
           </div>
+          <div className="hidden md:block">
+            <ConnectionIndicator />
+          </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
           <div className="hidden sm:block">
@@ -280,6 +407,30 @@ export function ChatInterface({
           </div>
         </div>
       </div>
+
+      {/* Connection Lost Banner */}
+      {connectionLostDuringExecution && (
+        <div className="flex items-center justify-between gap-3 border-b border-red-200 bg-red-50 px-4 py-2 dark:border-red-900/40 dark:bg-red-950/20">
+          <div className="flex items-center gap-2">
+            <Unplug className="h-4 w-4 text-red-500" />
+            <span className="text-sm font-medium text-red-700 dark:text-red-400">
+              Connection to Revit Agent lost during execution
+            </span>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1.5 border-red-200 text-red-700 hover:bg-red-100 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"
+            onClick={() => {
+              setConnectionLostDuringExecution(false);
+              checkConnectionStatus();
+            }}
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            Retry
+          </Button>
+        </div>
+      )}
 
       {/* Messages */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6">

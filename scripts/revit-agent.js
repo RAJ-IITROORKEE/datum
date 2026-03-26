@@ -8,10 +8,104 @@ const os = require("node:os");
 const http = require("node:http");
 const https = require("node:https");
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONFIGURATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
 const APP_DIR = path.join(os.homedir(), "AppData", "Roaming", "DatumRevitAgent");
 const CONFIG_PATH = process.env.DATUM_AGENT_CONFIG || path.join(APP_DIR, "config.json");
 const LOG_PATH = path.join(APP_DIR, "agent.log");
 const LOCK_PATH = path.join(APP_DIR, "agent.lock");
+const AGENT_VERSION = "1.2.0";
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TERMINAL COLORS & STYLING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const colors = {
+  reset: "\x1b[0m",
+  bright: "\x1b[1m",
+  dim: "\x1b[2m",
+  underscore: "\x1b[4m",
+  blink: "\x1b[5m",
+  reverse: "\x1b[7m",
+  hidden: "\x1b[8m",
+  // Foreground
+  black: "\x1b[30m",
+  red: "\x1b[31m",
+  green: "\x1b[32m",
+  yellow: "\x1b[33m",
+  blue: "\x1b[34m",
+  magenta: "\x1b[35m",
+  cyan: "\x1b[36m",
+  white: "\x1b[37m",
+  // Background
+  bgBlack: "\x1b[40m",
+  bgRed: "\x1b[41m",
+  bgGreen: "\x1b[42m",
+  bgYellow: "\x1b[43m",
+  bgBlue: "\x1b[44m",
+  bgMagenta: "\x1b[45m",
+  bgCyan: "\x1b[46m",
+  bgWhite: "\x1b[47m",
+};
+
+const c = {
+  success: (text) => `${colors.green}${text}${colors.reset}`,
+  error: (text) => `${colors.red}${text}${colors.reset}`,
+  warning: (text) => `${colors.yellow}${text}${colors.reset}`,
+  info: (text) => `${colors.cyan}${text}${colors.reset}`,
+  dim: (text) => `${colors.dim}${text}${colors.reset}`,
+  bright: (text) => `${colors.bright}${text}${colors.reset}`,
+  highlight: (text) => `${colors.bgBlue}${colors.white}${text}${colors.reset}`,
+  tool: (text) => `${colors.magenta}${text}${colors.reset}`,
+  status: (connected) => connected 
+    ? `${colors.bgGreen}${colors.black} CONNECTED ${colors.reset}`
+    : `${colors.bgRed}${colors.white} DISCONNECTED ${colors.reset}`,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BANNER & UI
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function printBanner() {
+  console.log("");
+  console.log(c.info("╔═══════════════════════════════════════════════════════════════════╗"));
+  console.log(c.info("║") + c.bright("                    DATUM REVIT AGENT                            ") + c.info("║"));
+  console.log(c.info("║") + c.dim(`                       Version ${AGENT_VERSION}                              `) + c.info("║"));
+  console.log(c.info("╠═══════════════════════════════════════════════════════════════════╣"));
+  console.log(c.info("║") + " Bridge between Datum Copilot (cloud) and local Revit             " + c.info("║"));
+  console.log(c.info("╚═══════════════════════════════════════════════════════════════════╝"));
+  console.log("");
+}
+
+function printSection(title) {
+  console.log("");
+  console.log(c.bright(`┌─ ${title} ${"─".repeat(Math.max(0, 60 - title.length))}┐`));
+}
+
+function printSectionEnd() {
+  console.log(c.dim("└" + "─".repeat(64) + "┘"));
+  console.log("");
+}
+
+function printKeyValue(key, value, color = null) {
+  const formattedValue = color ? color(value) : value;
+  console.log(`  ${c.dim("•")} ${key}: ${formattedValue}`);
+}
+
+function printStatus(revitConnected, datumConnected, heartbeatOk) {
+  console.log("");
+  console.log(c.bright("  Status Dashboard:"));
+  console.log(`    Revit Plugin:  ${c.status(revitConnected)}`);
+  console.log(`    Datum Server:  ${c.status(datumConnected)}`);
+  console.log(`    Heartbeat:     ${heartbeatOk ? c.success("OK") : c.error("FAILED")}`);
+  console.log("");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ERROR HANDLING
+// ═══════════════════════════════════════════════════════════════════════════════
 
 class ApiRequestError extends Error {
   constructor(message, statusCode) {
@@ -20,6 +114,10 @@ class ApiRequestError extends Error {
     this.statusCode = statusCode;
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ARGUMENT PARSING
+// ═══════════════════════════════════════════════════════════════════════════════
 
 function parseArgs(argv) {
   const out = {};
@@ -38,15 +136,50 @@ function parseArgs(argv) {
   return out;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// FILE SYSTEM HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
 function ensureConfigDir() {
   if (!fs.existsSync(APP_DIR)) {
     fs.mkdirSync(APP_DIR, { recursive: true });
   }
 }
 
-function log(message) {
-  const line = `[${new Date().toISOString()}] ${message}`;
-  console.log(line);
+function log(message, level = "info") {
+  const timestamp = new Date().toISOString();
+  let coloredMessage;
+  let prefix;
+  
+  switch (level) {
+    case "success":
+      prefix = c.success("[SUCCESS]");
+      coloredMessage = c.success(message);
+      break;
+    case "error":
+      prefix = c.error("[ERROR]");
+      coloredMessage = c.error(message);
+      break;
+    case "warning":
+      prefix = c.warning("[WARNING]");
+      coloredMessage = c.warning(message);
+      break;
+    case "tool":
+      prefix = c.tool("[TOOL]");
+      coloredMessage = c.tool(message);
+      break;
+    case "debug":
+      prefix = c.dim("[DEBUG]");
+      coloredMessage = c.dim(message);
+      break;
+    default:
+      prefix = c.info("[INFO]");
+      coloredMessage = message;
+  }
+  
+  const line = `[${timestamp}] ${message}`;
+  console.log(`${c.dim(timestamp)} ${prefix} ${coloredMessage}`);
+  
   try {
     ensureConfigDir();
     fs.appendFileSync(LOG_PATH, `${line}\n`, "utf8");
@@ -55,10 +188,10 @@ function log(message) {
   }
 }
 
-function promptLine(question) {
+function promptLine(question, isPassword = false) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((resolve) => {
-    rl.question(question, (answer) => {
+    rl.question(c.bright(question), (answer) => {
       rl.close();
       resolve(String(answer || ""));
     });
@@ -73,7 +206,7 @@ function loadConfig() {
     
     // Migrate old localhost URLs to production
     if (config.datumUrl === "http://localhost:3000" || config.datumUrl === "http://127.0.0.1:3000") {
-      log("Migrating config: Updating localhost URL to production URL");
+      log("Migrating config: Updating localhost URL to production URL", "warning");
       config.datumUrl = "https://datumcopilot.vercel.app";
       saveConfig(config);
     }
@@ -88,6 +221,10 @@ function saveConfig(nextConfig) {
   ensureConfigDir();
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(nextConfig, null, 2), "utf8");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// URL & PORT PARSING
+// ═══════════════════════════════════════════════════════════════════════════════
 
 function parsePortList(value) {
   if (!value || typeof value !== "string") return [];
@@ -110,10 +247,14 @@ function normalizeBaseUrl(value) {
   return value.trim().replace(/\/+$/, "");
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONFIGURATION INITIALIZATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
 const args = parseArgs(process.argv.slice(2));
 const config = loadConfig();
 
-// Default to production URL for packaged builds, use IPv4 127.0.0.1 for local dev to avoid IPv6 issues
+// Default to production URL for packaged builds
 const DEFAULT_DATUM_URL = "https://datumcopilot.vercel.app";
 const configuredDatumUrl = normalizeBaseUrl(args.url || process.env.DATUM_URL || config.datumUrl || DEFAULT_DATUM_URL);
 const configuredDatumFallbacks = parseUrlList(
@@ -137,13 +278,23 @@ const REVIT_STARTUP_WAIT_MS = Number(
   args.revitStartupWaitMs || process.env.REVIT_STARTUP_WAIT_MS || config.revitStartupWaitMs || 120000
 );
 const REVIT_RETRY_MS = Number(args.revitRetryMs || process.env.REVIT_RETRY_MS || config.revitRetryMs || 2000);
-const AGENT_VERSION = "1.1.0";
 
 let token = args.token || process.env.REVIT_AGENT_TOKEN || config.token || "";
 let lockFd = null;
 let lastRevitOfflineLogAt = 0;
 let activeRevitPort = REVIT_PORTS[0];
 let activeDatumUrl = DATUM_URLS[0];
+
+// Statistics tracking
+let stats = {
+  commandsExecuted: 0,
+  commandsFailed: 0,
+  heartbeats: 0,
+  startTime: Date.now(),
+  lastCommandAt: null,
+  lastHeartbeatAt: null,
+  revitConnectionLost: 0,
+};
 
 function saveRuntimeConfig() {
   saveConfig({
@@ -161,16 +312,24 @@ function saveRuntimeConfig() {
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ERROR HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
 function isUnauthorizedError(error) {
   return error instanceof ApiRequestError && error.statusCode === 401;
 }
 
 async function clearTokenAndRepair(reason) {
-  log(reason);
+  log(reason, "warning");
   token = "";
   saveRuntimeConfig();
   await pairWithRetry();
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SINGLE INSTANCE LOCK
+// ═══════════════════════════════════════════════════════════════════════════════
 
 function isPidRunning(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -233,11 +392,20 @@ function acquireSingleInstanceLock() {
 
 function setupSignalHandlers() {
   process.on("SIGINT", () => {
+    console.log("");
+    log("Shutting down gracefully (SIGINT)...", "warning");
     releaseSingleInstanceLock();
+    printSection("Session Statistics");
+    printKeyValue("Commands executed", stats.commandsExecuted.toString(), c.success);
+    printKeyValue("Commands failed", stats.commandsFailed.toString(), stats.commandsFailed > 0 ? c.error : c.dim);
+    printKeyValue("Heartbeats sent", stats.heartbeats.toString());
+    printKeyValue("Uptime", formatUptime(Date.now() - stats.startTime));
+    printSectionEnd();
     process.exit(0);
   });
 
   process.on("SIGTERM", () => {
+    log("Shutting down gracefully (SIGTERM)...", "warning");
     releaseSingleInstanceLock();
     process.exit(0);
   });
@@ -246,6 +414,24 @@ function setupSignalHandlers() {
     releaseSingleInstanceLock();
   });
 }
+
+function formatUptime(ms) {
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  
+  if (hours > 0) {
+    return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
+  } else if (minutes > 0) {
+    return `${minutes}m ${seconds % 60}s`;
+  } else {
+    return `${seconds}s`;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// JSON-RPC COMMUNICATION
+// ═══════════════════════════════════════════════════════════════════════════════
 
 function jsonRpcRequest(commandName, payload) {
   return {
@@ -262,11 +448,12 @@ function sendToLocalRevit(commandName, payload) {
     let buffer = "";
     const timer = setTimeout(() => {
       socket.destroy();
-      reject(new Error("Timed out waiting for Revit plugin response"));
+      reject(new Error("Timed out waiting for Revit plugin response (120s)"));
     }, 120000);
 
     socket.connect(activeRevitPort, REVIT_HOST, () => {
       const request = jsonRpcRequest(commandName, payload);
+      log(`Sending to Revit: ${c.tool(commandName)}`, "tool");
       socket.write(JSON.stringify(request));
     });
 
@@ -288,6 +475,7 @@ function sendToLocalRevit(commandName, payload) {
 
     socket.on("error", (error) => {
       clearTimeout(timer);
+      stats.revitConnectionLost++;
       reject(error);
     });
 
@@ -296,6 +484,10 @@ function sendToLocalRevit(commandName, payload) {
     });
   });
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HTTP API HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
 
 function isNetworkRetryableError(error) {
   const code = error && typeof error === "object" ? error.code : "";
@@ -372,7 +564,7 @@ async function api(requestPath, options = {}) {
       if (activeDatumUrl !== baseUrl) {
         activeDatumUrl = baseUrl;
         saveRuntimeConfig();
-        log(`Switched Datum URL to: ${activeDatumUrl}`);
+        log(`Switched Datum URL to: ${activeDatumUrl}`, "warning");
       }
       return response;
     } catch (error) {
@@ -385,6 +577,10 @@ async function api(requestPath, options = {}) {
 
   throw lastError || new Error("Failed to reach Datum API");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// REVIT CONNECTION HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
 
 function canConnectToRevitPort(port, timeoutMs = REVIT_CONNECT_TIMEOUT_MS) {
   return new Promise((resolve) => {
@@ -431,7 +627,8 @@ async function waitForRevitPluginReady(maxWaitMs, reasonLabel) {
     if (now - lastRevitOfflineLogAt >= 10000) {
       lastRevitOfflineLogAt = now;
       log(
-        `Revit plugin not reachable on ${REVIT_HOST} ports [${REVIT_PORTS.join(", ")}] (${reasonLabel}). Retrying in ${REVIT_RETRY_MS}ms...`
+        `Revit plugin not reachable on ${REVIT_HOST} ports [${REVIT_PORTS.join(", ")}] (${reasonLabel}). Retrying...`,
+        "warning"
       );
     }
     await new Promise((resolve) => setTimeout(resolve, REVIT_RETRY_MS));
@@ -440,15 +637,34 @@ async function waitForRevitPluginReady(maxWaitMs, reasonLabel) {
   return false;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// PAIRING FLOW
+// ═══════════════════════════════════════════════════════════════════════════════
+
 async function pairFlow() {
+  printSection("Pairing Setup");
+  console.log(c.info("  To pair this agent with your Datum account:"));
+  console.log(c.dim("  1. Go to Datum Copilot (/copilot)"));
+  console.log(c.dim("  2. Click 'Revit' button in the chat header"));
+  console.log(c.dim("  3. Click 'Generate pair code'"));
+  console.log(c.dim("  4. Enter the 6-character code below"));
+  console.log("");
+
   const prefilledCode = typeof args["pair-code"] === "string" ? args["pair-code"].trim().toUpperCase() : "";
-  const code = prefilledCode || (await promptLine("Enter pairing code from Copilot UI: ")).trim().toUpperCase();
+  const code = prefilledCode || (await promptLine("  Enter pairing code: ")).trim().toUpperCase();
+
+  if (!code || code.length !== 6) {
+    throw new Error("Invalid pairing code. Must be 6 characters.");
+  }
+
+  console.log("");
+  log("Validating pairing code...", "info");
 
   const pairResult = await api("/api/revit/agent/pair", {
     method: "POST",
     body: JSON.stringify({
       code,
-      deviceName: process.env.COMPUTERNAME || "Windows-PC",
+      deviceName: process.env.COMPUTERNAME || os.hostname() || "Windows-PC",
       os: process.platform,
       agentVersion: AGENT_VERSION,
     }),
@@ -457,8 +673,8 @@ async function pairFlow() {
   token = pairResult.token;
   saveRuntimeConfig();
 
-  log("Paired successfully. Token saved to config.");
-  log(`Config file: ${CONFIG_PATH}`);
+  log("Pairing successful! Agent is now connected to your Datum account.", "success");
+  printSectionEnd();
 }
 
 async function pairWithRetry() {
@@ -467,8 +683,8 @@ async function pairWithRetry() {
       await pairFlow();
       break;
     } catch (error) {
-      log(`Pairing failed: ${error.message || String(error)}`);
-      const retry = (await promptLine("Pairing failed. Try again? (y/n): ")).trim().toLowerCase();
+      log(`Pairing failed: ${error.message || String(error)}`, "error");
+      const retry = (await promptLine("  Try again? (y/n): ")).trim().toLowerCase();
       if (retry !== "y" && retry !== "yes") {
         throw new Error("Pairing cancelled by user");
       }
@@ -476,43 +692,73 @@ async function pairWithRetry() {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// MAIN LOOPS
+// ═══════════════════════════════════════════════════════════════════════════════
+
 async function heartbeatLoop() {
+  let consecutiveFailures = 0;
+  const maxConsecutiveFailures = 5;
+
   while (true) {
     try {
       await api("/api/revit/agent/heartbeat", {
         method: "POST",
         body: JSON.stringify({
-          deviceName: process.env.COMPUTERNAME || "Windows-PC",
+          deviceName: process.env.COMPUTERNAME || os.hostname() || "Windows-PC",
           os: process.platform,
           agentVersion: AGENT_VERSION,
         }),
       });
+      stats.heartbeats++;
+      stats.lastHeartbeatAt = Date.now();
+      consecutiveFailures = 0;
     } catch (error) {
+      consecutiveFailures++;
       if (isUnauthorizedError(error)) {
         await clearTokenAndRepair("Heartbeat unauthorized. Pairing token expired/revoked; re-pairing required.");
         continue;
       }
-      log(`Heartbeat error: ${error.message}`);
+      if (consecutiveFailures >= maxConsecutiveFailures) {
+        log(`Heartbeat failed ${consecutiveFailures} times: ${error.message}`, "error");
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, HEARTBEAT_MS));
   }
 }
 
 async function commandLoop() {
+  let consecutiveRevitFailures = 0;
+  const maxRevitFailures = 3;
+
   while (true) {
     try {
       const revitReady = await waitForRevitPluginReady(REVIT_RETRY_MS, "before polling commands");
       if (!revitReady) {
+        consecutiveRevitFailures++;
+        if (consecutiveRevitFailures % 10 === 1) {
+          log(`Waiting for Revit plugin connection... (attempt ${consecutiveRevitFailures})`, "warning");
+        }
         await new Promise((resolve) => setTimeout(resolve, REVIT_RETRY_MS));
         continue;
+      }
+      
+      if (consecutiveRevitFailures > 0) {
+        log(`Revit plugin reconnected on port ${activeRevitPort}`, "success");
+        consecutiveRevitFailures = 0;
       }
 
       const pull = await api("/api/revit/agent/jobs/pull", { method: "POST", body: "{}" });
       const jobs = pull?.jobs || [];
 
       for (const job of jobs) {
+        log(`Executing command: ${c.tool(job.commandName)}`, "tool");
+        const startTime = Date.now();
+        
         try {
           const result = await sendToLocalRevit(job.commandName, job.payload);
+          const duration = Date.now() - startTime;
+          
           await api("/api/revit/agent/jobs/result", {
             method: "POST",
             body: JSON.stringify({
@@ -521,7 +767,14 @@ async function commandLoop() {
               result,
             }),
           });
+          
+          stats.commandsExecuted++;
+          stats.lastCommandAt = Date.now();
+          log(`Command ${c.tool(job.commandName)} completed in ${duration}ms`, "success");
+          
         } catch (error) {
+          const duration = Date.now() - startTime;
+          
           await api("/api/revit/agent/jobs/result", {
             method: "POST",
             body: JSON.stringify({
@@ -530,6 +783,9 @@ async function commandLoop() {
               error: error.message,
             }),
           });
+          
+          stats.commandsFailed++;
+          log(`Command ${c.tool(job.commandName)} failed after ${duration}ms: ${error.message}`, "error");
         }
       }
     } catch (error) {
@@ -537,91 +793,126 @@ async function commandLoop() {
         await clearTokenAndRepair("Agent token unauthorized while polling commands. Re-pairing required.");
         continue;
       }
-      log(`Command poll error: ${error.message}`);
+      log(`Command poll error: ${error.message}`, "error");
     }
 
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// MAIN ENTRY POINT
+// ═══════════════════════════════════════════════════════════════════════════════
+
 async function main() {
   if (args.help) {
-    console.log("Datum Revit Agent");
-    console.log("Options:");
-    console.log("  --url <https://domain>");
-    console.log("  --urlFallbacks <https://a,https://b>");
-    console.log("  --token <agent-token>");
-    console.log("  --pair-code <code>");
-    console.log("  --revitHost <host>");
-    console.log("  --revitPort <port>");
-    console.log("  --revitPorts <csv>");
-    console.log("  --pollMs <ms>");
-    console.log("  --heartbeatMs <ms>");
-    console.log("  --revitConnectTimeoutMs <ms>");
-    console.log("  --revitStartupWaitMs <ms>");
-    console.log("  --revitRetryMs <ms>");
-    console.log("  --re-pair");
-    console.log("  --help");
+    printBanner();
+    printSection("Usage");
+    console.log("  datum-revit-agent [options]");
+    console.log("");
+    console.log("  Options:");
+    console.log("    --url <https://domain>        Datum server URL");
+    console.log("    --urlFallbacks <url1,url2>    Fallback URLs");
+    console.log("    --token <agent-token>         Pre-set agent token");
+    console.log("    --pair-code <code>            Pre-fill pairing code");
+    console.log("    --revitHost <host>            Revit plugin host (default: 127.0.0.1)");
+    console.log("    --revitPort <port>            Revit plugin port (default: 8080)");
+    console.log("    --revitPorts <port1,port2>    Additional ports to try");
+    console.log("    --pollMs <ms>                 Command poll interval (default: 1200)");
+    console.log("    --heartbeatMs <ms>            Heartbeat interval (default: 5000)");
+    console.log("    --re-pair                     Clear saved token and re-pair");
+    console.log("    --help                        Show this help");
+    printSectionEnd();
     return;
   }
 
-  acquireSingleInstanceLock();
+  printBanner();
+
+  try {
+    acquireSingleInstanceLock();
+  } catch (error) {
+    log(error.message, "error");
+    console.log("");
+    await promptLine("Press Enter to exit...");
+    process.exit(1);
+  }
+  
   setupSignalHandlers();
 
   if (args["re-pair"] || args["force-pair"]) {
     token = "";
     saveRuntimeConfig();
-    log("Re-pair requested. Existing token cleared.");
+    log("Re-pair requested. Existing token cleared.", "warning");
   }
 
   if (!token) {
     await pairWithRetry();
   } else {
+    log("Found existing pairing token, validating...", "info");
     try {
       await api("/api/revit/agent/heartbeat", {
         method: "POST",
         body: JSON.stringify({
-          deviceName: process.env.COMPUTERNAME || "Windows-PC",
+          deviceName: process.env.COMPUTERNAME || os.hostname() || "Windows-PC",
           os: process.platform,
           agentVersion: AGENT_VERSION,
         }),
       });
+      log("Token validated successfully", "success");
     } catch (error) {
       if (isUnauthorizedError(error)) {
         await clearTokenAndRepair("Saved token is no longer valid. Please enter a new pairing code.");
       } else {
-        log(`Initial token check warning: ${error.message}`);
+        log(`Initial token check warning: ${error.message}`, "warning");
       }
     }
   }
 
-  log(`Datum URL: ${activeDatumUrl}`);
+  printSection("Configuration");
+  printKeyValue("Datum URL", activeDatumUrl, c.info);
   if (DATUM_URLS.length > 1) {
-    log(`Datum URL fallbacks: ${DATUM_URLS.slice(1).join(", ")}`);
+    printKeyValue("Fallback URLs", DATUM_URLS.slice(1).join(", "), c.dim);
   }
-  log(`Revit plugin sockets: ${REVIT_HOST} on [${REVIT_PORTS.join(", ")}]`);
-  log(`Config: ${CONFIG_PATH}`);
-  log(`Log file: ${LOG_PATH}`);
+  printKeyValue("Revit plugin host", REVIT_HOST);
+  printKeyValue("Revit plugin ports", REVIT_PORTS.join(", "));
+  printKeyValue("Config file", CONFIG_PATH, c.dim);
+  printKeyValue("Log file", LOG_PATH, c.dim);
+  printSectionEnd();
 
+  log("Waiting for Revit plugin connection...", "info");
   const startupReady = await waitForRevitPluginReady(REVIT_STARTUP_WAIT_MS, "startup check");
+  
   if (!startupReady) {
     log(
-      `Revit plugin is still not reachable on ${REVIT_HOST} ports [${REVIT_PORTS.join(", ")}]. Agent will continue and retry automatically.`
+      `Revit plugin is not reachable on ${REVIT_HOST} ports [${REVIT_PORTS.join(", ")}]. Agent will continue and retry automatically.`,
+      "warning"
     );
+    console.log("");
+    console.log(c.warning("  Make sure:"));
+    console.log(c.dim("  1. Revit is running"));
+    console.log(c.dim("  2. The Datum MCP plugin is loaded in Revit"));
+    console.log(c.dim("  3. The plugin socket server is listening on port 8080"));
+    console.log("");
   } else {
-    log(`Revit plugin connection established on ${REVIT_HOST}:${activeRevitPort}.`);
+    log(`Revit plugin connected on ${REVIT_HOST}:${activeRevitPort}`, "success");
   }
 
-  log("Agent running. Press Ctrl+C to stop.");
+  printSection("Agent Running");
+  console.log(c.success("  Agent is now running and listening for commands."));
+  console.log(c.dim("  Commands from Datum Copilot will be forwarded to Revit."));
+  console.log("");
+  console.log(c.dim("  Press Ctrl+C to stop the agent."));
+  printSectionEnd();
 
   heartbeatLoop();
   await commandLoop();
 }
 
 main().catch(async (error) => {
-  log(`Agent fatal error: ${error?.message || String(error)}`);
+  log(`Agent fatal error: ${error?.message || String(error)}`, "error");
   releaseSingleInstanceLock();
   if (process.stdin.isTTY) {
+    console.log("");
     await promptLine("Press Enter to exit...");
   }
   process.exit(1);
