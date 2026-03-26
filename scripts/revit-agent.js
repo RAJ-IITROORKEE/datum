@@ -16,7 +16,7 @@ const APP_DIR = path.join(os.homedir(), "AppData", "Roaming", "DatumRevitAgent")
 const CONFIG_PATH = process.env.DATUM_AGENT_CONFIG || path.join(APP_DIR, "config.json");
 const LOG_PATH = path.join(APP_DIR, "agent.log");
 const LOCK_PATH = path.join(APP_DIR, "agent.lock");
-const AGENT_VERSION = "1.4.0";
+const AGENT_VERSION = "1.4.1";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TERMINAL COLORS & STYLING
@@ -254,13 +254,31 @@ function normalizeBaseUrl(value) {
 const args = parseArgs(process.argv.slice(2));
 const config = loadConfig();
 
-// Default to production URL for packaged builds
+// Auto-detect development mode
 const DEFAULT_DATUM_URL = "https://datumcopilot.vercel.app";
-const configuredDatumUrl = normalizeBaseUrl(args.url || process.env.DATUM_URL || config.datumUrl || DEFAULT_DATUM_URL);
+const LOCALHOST_DEV_URL = "http://localhost:3000";
+
+// Priority: CLI arg > env var > config file > auto-detect > production
+let configuredDatumUrl = normalizeBaseUrl(args.url || process.env.DATUM_URL || config.datumUrl || "");
+
 const configuredDatumFallbacks = parseUrlList(
   args.urlFallbacks || process.env.DATUM_URL_FALLBACKS || config.datumUrlFallbacks || ""
 ).map((url) => normalizeBaseUrl(url));
-const DATUM_URLS = Array.from(new Set([configuredDatumUrl, ...configuredDatumFallbacks, DEFAULT_DATUM_URL].filter(Boolean)));
+
+// Build URL list based on whether localhost is explicitly requested or should be auto-detected
+let urlList;
+if (configuredDatumUrl === LOCALHOST_DEV_URL || process.env.NODE_ENV === "development") {
+  // Development mode: localhost first, then production as fallback
+  urlList = [LOCALHOST_DEV_URL, ...configuredDatumFallbacks, DEFAULT_DATUM_URL];
+} else if (configuredDatumUrl) {
+  // Explicit URL provided: use it first, then fallbacks, then localhost (for dev flexibility), then production
+  urlList = [configuredDatumUrl, ...configuredDatumFallbacks, LOCALHOST_DEV_URL, DEFAULT_DATUM_URL];
+} else {
+  // No explicit URL: try localhost first (for dev), then production
+  urlList = [LOCALHOST_DEV_URL, DEFAULT_DATUM_URL, ...configuredDatumFallbacks];
+}
+
+const DATUM_URLS = Array.from(new Set(urlList.filter(Boolean)));
 const POLL_MS = Number(args.pollMs || process.env.AGENT_POLL_MS || config.pollMs || 1200);
 const HEARTBEAT_MS = Number(args.heartbeatMs || process.env.AGENT_HEARTBEAT_MS || config.heartbeatMs || 5000);
 const REVIT_HOST = args.revitHost || process.env.REVIT_HOST || config.revitHost || "127.0.0.1";
