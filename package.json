@@ -7,8 +7,12 @@
     "build": "node scripts/build.js",
     "start": "next start",
     "lint": "eslint",
+    "agent": "node scripts/revit-agent.js",
+    "agent:dev": "node scripts/revit-agent.js --url http://localhost:3000",
+    "agent:prod": "node scripts/revit-agent.js --url https://datumcopilot.vercel.app",
+    "agent:kill": "node scripts/revit-agent.js --kill",
     "revit-agent": "node scripts/revit-agent.js",
-    "build:revit-agent": "pkg scripts/revit-agent.js --targets node18-win-x64 --output scripts/build/DatumRevitAgent.exe",
+    "build:revit-agent": "pkg scripts/revit-agent.js --targets node18-win-x64 --output scripts/build/DatumRevitAgent.exe --compress GZip",
     "build:revit-agent:installer": "npm run build:revit-agent && \"C:\\Program Files (x86)\\NSIS\\makensis.exe\" scripts/installer.nsi"
   },
   "dependencies": {
