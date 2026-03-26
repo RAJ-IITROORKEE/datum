@@ -27,7 +27,17 @@ function isStatusIntent(input: string): boolean {
 }
 
 type AgentStage = "planning" | "executing" | "completed" | "error";
-type AgentEventKind = "analysis" | "tool";
+type AgentEventKind = "analysis" | "tool" | "plan";
+
+type AgentTodoStepStatus = "pending" | "in_progress" | "completed" | "failed" | "blocked";
+
+interface AgentTodoStep {
+  id: string;
+  title: string;
+  toolName?: string;
+  status: AgentTodoStepStatus;
+  reason?: string;
+}
 
 interface AgentProgressEvent {
   stage: AgentStage;
@@ -35,6 +45,7 @@ interface AgentProgressEvent {
   toolName?: string;
   kind: AgentEventKind;
   details?: string;
+  plan?: AgentTodoStep[];
   timestamp: string;
 }
 
@@ -189,6 +200,33 @@ function isRevitExecutionBuildIntent(input: string): boolean {
   ]);
 
   return hasBuildVerb && hasBimObject;
+}
+
+function requiresBuildClarification(input: string): boolean {
+  const text = input.toLowerCase();
+  const buildLike = containsAny(text, ["create", "build", "make", "design", "generate"]);
+  const modelLike = containsAny(text, ["house", "home", "layout", "plan", "revit", "building"]);
+
+  if (!buildLike || !modelLike) {
+    return false;
+  }
+
+  const hasScope = containsAny(text, [
+    "1bhk",
+    "2bhk",
+    "3bhk",
+    "bedroom",
+    "rooms",
+    "room",
+    "sqft",
+    "sqm",
+    "meter",
+    "m2",
+    "x",
+    "by",
+  ]);
+
+  return !hasScope;
 }
 
 function isContinuationIntent(input: string): boolean {
@@ -355,6 +393,52 @@ function emitAgentProgress(
   event: AgentProgressEvent
 ) {
   controller.enqueue(encoder.encode(createSseData({ agent: event })));
+}
+
+function buildTodoPlanFromToolCalls(
+  calls: Array<{ toolName: string; args: Record<string, unknown> }>
+): AgentTodoStep[] {
+  return calls.map((call, index) => ({
+    id: `step-${index + 1}`,
+    title: `Run ${call.toolName}`,
+    toolName: call.toolName,
+    status: "pending",
+  }));
+}
+
+function cloneTodoPlan(plan: AgentTodoStep[]): AgentTodoStep[] {
+  return plan.map((step) => ({ ...step }));
+}
+
+function updateTodoPlanStep(
+  plan: AgentTodoStep[],
+  stepId: string,
+  updates: Partial<AgentTodoStep>
+): AgentTodoStep[] {
+  return plan.map((step) => (step.id === stepId ? { ...step, ...updates } : step));
+}
+
+function formatToolOutcomeSummary(
+  outcomes: Array<{ toolName: string; status: "success" | "failed"; reason?: string }>
+): string {
+  if (outcomes.length === 0) {
+    return "No tools were executed.";
+  }
+
+  const success = outcomes.filter((item) => item.status === "success");
+  const failed = outcomes.filter((item) => item.status === "failed");
+
+  const successLine =
+    success.length > 0
+      ? `Working tools: ${success.map((item) => item.toolName).join(", ")}`
+      : "Working tools: none";
+
+  const failedLine =
+    failed.length > 0
+      ? `Failed tools: ${failed.map((item) => `${item.toolName} (${item.reason || "unknown reason"})`).join("; ")}`
+      : "Failed tools: none";
+
+  return `${successLine}\n${failedLine}`;
 }
 
 function toAgentEvent(
@@ -652,14 +736,33 @@ export async function POST(req: NextRequest) {
               );
 
               if (manualRevitConnected) {
+                let todoPlan: AgentTodoStep[] = [
+                  { id: "step-1", title: "Analyze current plan", toolName: "analyze_layout_design", status: "pending" },
+                  { id: "step-2", title: "Get available levels", toolName: "get_levels_list", status: "pending" },
+                  { id: "step-3", title: "Create 2BHK walls", toolName: "create_wall", status: "pending" },
+                ];
+
                 emitAgentProgress(
                   controller,
                   encoder,
                   toAgentEvent({
-                    kind: "tool",
+                    kind: "plan",
+                    stage: "planning",
+                    message: "Created execution plan for 2BHK workflow",
+                    plan: cloneTodoPlan(todoPlan),
+                  })
+                );
+
+                todoPlan = updateTodoPlanStep(todoPlan, "step-1", { status: "in_progress" });
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "plan",
                     stage: "executing",
                     message: "Step 1/3: Analyzing current plan",
                     toolName: "analyze_layout_design",
+                    plan: cloneTodoPlan(todoPlan),
                     details: summarizeForDetails(parsedArgs, 700),
                   })
                 );
@@ -670,6 +773,30 @@ export async function POST(req: NextRequest) {
                 if (!analysisResult.success) {
                   throw new Error(`Plan analysis failed: ${analysisResult.error}`);
                 }
+
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "plan",
+                    stage: "completed",
+                    message: "Step 1/3 completed",
+                    plan: cloneTodoPlan(updateTodoPlanStep(todoPlan, "step-1", { status: "completed" })),
+                  })
+                );
+                todoPlan = updateTodoPlanStep(todoPlan, "step-1", { status: "completed" });
+
+                todoPlan = updateTodoPlanStep(todoPlan, "step-2", { status: "in_progress" });
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "plan",
+                    stage: "executing",
+                    message: "Step 2/3: Reading available levels",
+                    plan: cloneTodoPlan(todoPlan),
+                  })
+                );
 
                 emitAgentProgress(
                   controller,
@@ -687,12 +814,13 @@ export async function POST(req: NextRequest) {
                   controller,
                   encoder,
                   toAgentEvent({
-                    kind: "tool",
-                    stage: "executing",
-                    message: "Step 2/3: Reading available levels",
-                    toolName: "get_levels_list",
+                    kind: "plan",
+                    stage: "completed",
+                    message: "Step 2/3 completed",
+                    plan: cloneTodoPlan(updateTodoPlanStep(todoPlan, "step-2", { status: "completed" })),
                   })
                 );
+                todoPlan = updateTodoPlanStep(todoPlan, "step-2", { status: "completed" });
                 emitContentChunk(controller, encoder, "Analysis complete. Fetching model levels and preparing wall placement...\n\n");
 
                 const levelsJob = await enqueueCommandForUser(userId, "get_levels_list", {});
@@ -703,6 +831,18 @@ export async function POST(req: NextRequest) {
 
                 const levelId = extractFirstLevelId(levelsResult.result) ?? 1;
                 const wallsPayload = buildSimple2BhkWalls(levelId);
+
+                todoPlan = updateTodoPlanStep(todoPlan, "step-3", { status: "in_progress" });
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "plan",
+                    stage: "executing",
+                    message: "Step 3/3: Creating 2BHK walls",
+                    plan: cloneTodoPlan(todoPlan),
+                  })
+                );
 
                 emitAgentProgress(
                   controller,
@@ -727,6 +867,18 @@ export async function POST(req: NextRequest) {
                   controller,
                   encoder,
                   toAgentEvent({
+                    kind: "plan",
+                    stage: "completed",
+                    message: "Execution plan completed",
+                    plan: cloneTodoPlan(updateTodoPlanStep(todoPlan, "step-3", { status: "completed" })),
+                  })
+                );
+                todoPlan = updateTodoPlanStep(todoPlan, "step-3", { status: "completed" });
+
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
                     kind: "tool",
                     stage: "completed",
                     message: "Continuous 2BHK workflow completed",
@@ -739,8 +891,26 @@ export async function POST(req: NextRequest) {
                   "Completed continuous 2BHK base build in Revit (analysis + levels + walls). Next, I can continue automatically with doors/windows/room naming.";
                 emitContentChunk(controller, encoder, finalResponse);
               } else {
+                const blockedPlan: AgentTodoStep[] = [
+                  {
+                    id: "step-1",
+                    title: "Connect Datum Revit Agent",
+                    status: "blocked",
+                    reason: "Revit Agent is disconnected",
+                  },
+                ];
                 finalResponse =
                   "Revit Agent is disconnected. I cannot continue the agent workflow until plugin + local agent are connected.";
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "plan",
+                    stage: "error",
+                    message: "Execution blocked until connection is restored",
+                    plan: blockedPlan,
+                  })
+                );
                 emitAgentProgress(
                   controller,
                   encoder,
@@ -920,6 +1090,21 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
       return buildImmediateSseResponse(disconnectedExecutionText, conversation.id);
     }
 
+    if (requiresBuildClarification(userText)) {
+      const clarifyText =
+        "I can run this fully agentically, but I need one input before execution: target scope. Reply with one option: (1) 1BHK compact, (2) 2BHK standard, (3) 3BHK, or provide custom size (example: 14m x 12m, 2 bedrooms).";
+
+      await prisma.chatMessage.create({
+        data: {
+          conversationId: conversation.id,
+          role: "assistant",
+          content: clarifyText,
+        },
+      });
+
+      return buildImmediateSseResponse(clarifyText, conversation.id);
+    }
+
     if (canRun2BhkWorkflow) {
       const encoder = new TextEncoder();
       let finalResponse = "";
@@ -933,21 +1118,47 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
               const canCreateFloor = isToolAvailable("create_floor");
               const canCreateRoom = isToolAvailable("create_room");
               const canGetLevels = isToolAvailable("get_levels_list");
+              const toolOutcomes: Array<{ toolName: string; status: "success" | "failed"; reason?: string }> = [];
+
+              let todoPlan: AgentTodoStep[] = [
+                { id: "step-1", title: "Analyze existing model", toolName: "analyze_layout_design", status: canAnalyze ? "pending" : "blocked", reason: canAnalyze ? undefined : "Tool unavailable in live MCP catalog" },
+                { id: "step-2", title: "Read available levels", toolName: "get_levels_list", status: canGetLevels ? "pending" : "failed", reason: canGetLevels ? undefined : "Required tool missing" },
+                { id: "step-3", title: "Create 2BHK walls", toolName: "create_wall", status: canCreateWalls ? "pending" : "failed", reason: canCreateWalls ? undefined : "Required tool missing" },
+                { id: "step-4", title: "Create floor slab", toolName: "create_floor", status: canCreateFloor ? "pending" : "blocked", reason: canCreateFloor ? undefined : "Optional tool unavailable" },
+                { id: "step-5", title: "Create room objects", toolName: "create_room", status: canCreateRoom ? "pending" : "blocked", reason: canCreateRoom ? undefined : "Optional tool unavailable" },
+                { id: "step-6", title: "Verify final model state", toolName: "analyze_layout_design", status: canAnalyze ? "pending" : "blocked", reason: canAnalyze ? undefined : "Tool unavailable in live MCP catalog" },
+              ];
+
+              emitAgentProgress(
+                controller,
+                encoder,
+                toAgentEvent({
+                  kind: "plan",
+                  stage: "planning",
+                  message: "Created execution plan for end-to-end 2BHK automation",
+                  plan: cloneTodoPlan(todoPlan),
+                })
+              );
 
               let beforeCounts = { walls: 0, floors: 0, rooms: 0 };
               let afterCounts = { walls: 0, floors: 0, rooms: 0 };
 
               if (!canCreateWalls || !canGetLevels) {
+                toolOutcomes.push(
+                  ...(!canGetLevels ? [{ toolName: "get_levels_list", status: "failed" as const, reason: "Required tool missing" }] : []),
+                  ...(!canCreateWalls ? [{ toolName: "create_wall", status: "failed" as const, reason: "Required tool missing" }] : [])
+                );
                 finalResponse =
-                  "Cannot start 2BHK execution because required tools are unavailable in current MCP catalog (need get_levels_list + create_wall).";
+                  `Cannot start 2BHK execution because required tools are unavailable in current MCP catalog (need get_levels_list + create_wall).\n\n${formatToolOutcomeSummary(toolOutcomes)}`;
                 emitAgentProgress(
                   controller,
                   encoder,
                   toAgentEvent({
-                    kind: "analysis",
+                    kind: "plan",
                     stage: "error",
-                    message: "Required tools are missing from catalog",
+                    message: "Execution plan failed: required tools missing",
                     details: `Available required flags => get_levels_list:${canGetLevels}, create_wall:${canCreateWalls}`,
+                    plan: cloneTodoPlan(todoPlan),
                   })
                 );
                 emitContentChunk(controller, encoder, finalResponse);
@@ -966,16 +1177,18 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                 return;
               }
 
-              emitAgentProgress(
-                controller,
-                encoder,
-                toAgentEvent({
-                  kind: "analysis",
-                  stage: "planning",
-                  message: "Analyzing current Revit plan before generating 2BHK layout",
-                })
-              );
               if (canAnalyze) {
+                todoPlan = updateTodoPlanStep(todoPlan, "step-1", { status: "in_progress" });
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "plan",
+                    stage: "executing",
+                    message: "Step 1/6: analyzing current Revit model",
+                    plan: cloneTodoPlan(todoPlan),
+                  })
+                );
                 emitContentChunk(
                   controller,
                   encoder,
@@ -995,9 +1208,21 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                 if (!analysisResult.success || analysisToolError) {
                   throw new Error(`Plan analysis failed: ${analysisToolError || analysisResult.error}`);
                 }
+                toolOutcomes.push({ toolName: "analyze_layout_design", status: "success" });
 
                 beforeCounts = getAnalysisCounts(analysisResult.result);
+                todoPlan = updateTodoPlanStep(todoPlan, "step-1", { status: "completed" });
 
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "plan",
+                    stage: "completed",
+                    message: "Step 1/6 completed",
+                    plan: cloneTodoPlan(todoPlan),
+                  })
+                );
                 emitAgentProgress(
                   controller,
                   encoder,
@@ -1009,16 +1234,20 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                   })
                 );
               } else {
-                emitAgentProgress(
-                  controller,
-                  encoder,
-                  toAgentEvent({
-                    kind: "analysis",
-                    stage: "error",
-                    message: "analyze_layout_design not available, continuing with creation only",
-                  })
-                );
+                toolOutcomes.push({ toolName: "analyze_layout_design", status: "failed", reason: "Tool unavailable in live MCP catalog" });
               }
+
+              todoPlan = updateTodoPlanStep(todoPlan, "step-2", { status: "in_progress" });
+              emitAgentProgress(
+                controller,
+                encoder,
+                toAgentEvent({
+                  kind: "plan",
+                  stage: "executing",
+                  message: "Step 2/6: reading model levels",
+                  plan: cloneTodoPlan(todoPlan),
+                })
+              );
               emitContentChunk(
                 controller,
                 encoder,
@@ -1031,9 +1260,33 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
               if (!levelsResult.success || levelsToolError) {
                 throw new Error(`Failed to fetch levels: ${levelsToolError || levelsResult.error}`);
               }
+              toolOutcomes.push({ toolName: "get_levels_list", status: "success" });
+              todoPlan = updateTodoPlanStep(todoPlan, "step-2", { status: "completed" });
+              emitAgentProgress(
+                controller,
+                encoder,
+                toAgentEvent({
+                  kind: "plan",
+                  stage: "completed",
+                  message: "Step 2/6 completed",
+                  plan: cloneTodoPlan(todoPlan),
+                })
+              );
 
               const levelId = extractFirstLevelId(levelsResult.result) ?? 1;
               const wallPayload = buildSimple2BhkWalls(levelId);
+
+              todoPlan = updateTodoPlanStep(todoPlan, "step-3", { status: "in_progress" });
+              emitAgentProgress(
+                controller,
+                encoder,
+                toAgentEvent({
+                  kind: "plan",
+                  stage: "executing",
+                  message: "Step 3/6: creating 2BHK walls",
+                  plan: cloneTodoPlan(todoPlan),
+                })
+              );
 
               emitAgentProgress(
                 controller,
@@ -1059,6 +1312,18 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
               if (!wallsResult.success || wallsToolError) {
                 throw new Error(`Wall creation failed: ${wallsToolError || wallsResult.error}`);
               }
+              toolOutcomes.push({ toolName: "create_wall", status: "success" });
+              todoPlan = updateTodoPlanStep(todoPlan, "step-3", { status: "completed" });
+              emitAgentProgress(
+                controller,
+                encoder,
+                toAgentEvent({
+                  kind: "plan",
+                  stage: "completed",
+                  message: "Step 3/6 completed",
+                  plan: cloneTodoPlan(todoPlan),
+                })
+              );
 
               emitAgentProgress(
                 controller,
@@ -1073,6 +1338,17 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
               );
 
               if (canCreateFloor) {
+                todoPlan = updateTodoPlanStep(todoPlan, "step-4", { status: "in_progress" });
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "plan",
+                    stage: "executing",
+                    message: "Step 4/6: creating floor slab",
+                    plan: cloneTodoPlan(todoPlan),
+                  })
+                );
                 const floorPayload = buildSimple2BhkFloor(levelId);
                 emitAgentProgress(
                   controller,
@@ -1090,6 +1366,18 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                 const floorResult = await waitForCommandResult(floorJob.id);
                 const floorToolError = floorResult.success ? getToolExecutionError(floorResult.result) : null;
                 if (floorResult.success && !floorToolError) {
+                  toolOutcomes.push({ toolName: "create_floor", status: "success" });
+                  todoPlan = updateTodoPlanStep(todoPlan, "step-4", { status: "completed" });
+                  emitAgentProgress(
+                    controller,
+                    encoder,
+                    toAgentEvent({
+                      kind: "plan",
+                      stage: "completed",
+                      message: "Step 4/6 completed",
+                      plan: cloneTodoPlan(todoPlan),
+                    })
+                  );
                   emitAgentProgress(
                     controller,
                     encoder,
@@ -1106,6 +1394,24 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                     controller,
                     encoder,
                     toAgentEvent({
+                      kind: "plan",
+                      stage: "error",
+                      message: "Step 4/6 failed",
+                      plan: cloneTodoPlan(updateTodoPlanStep(todoPlan, "step-4", {
+                        status: "failed",
+                        reason: String(floorToolError || floorResult.error || "Unknown error"),
+                      })),
+                    })
+                  );
+                  todoPlan = updateTodoPlanStep(todoPlan, "step-4", {
+                    status: "failed",
+                    reason: String(floorToolError || floorResult.error || "Unknown error"),
+                  });
+                  toolOutcomes.push({ toolName: "create_floor", status: "failed", reason: String(floorToolError || floorResult.error || "Unknown error") });
+                  emitAgentProgress(
+                    controller,
+                    encoder,
+                    toAgentEvent({
                       kind: "tool",
                       stage: "error",
                       message: `Floor creation skipped: ${floorToolError || floorResult.error}`,
@@ -1114,9 +1420,22 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                     })
                   );
                 }
+              } else {
+                toolOutcomes.push({ toolName: "create_floor", status: "failed", reason: "Tool unavailable in live MCP catalog" });
               }
 
               if (canCreateRoom) {
+                todoPlan = updateTodoPlanStep(todoPlan, "step-5", { status: "in_progress" });
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "plan",
+                    stage: "executing",
+                    message: "Step 5/6: creating room objects",
+                    plan: cloneTodoPlan(todoPlan),
+                  })
+                );
                 const roomPayload = buildSimple2BhkRooms(levelId);
                 emitAgentProgress(
                   controller,
@@ -1134,6 +1453,18 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                 const roomResult = await waitForCommandResult(roomJob.id);
                 const roomToolError = roomResult.success ? getToolExecutionError(roomResult.result) : null;
                 if (roomResult.success && !roomToolError) {
+                  toolOutcomes.push({ toolName: "create_room", status: "success" });
+                  todoPlan = updateTodoPlanStep(todoPlan, "step-5", { status: "completed" });
+                  emitAgentProgress(
+                    controller,
+                    encoder,
+                    toAgentEvent({
+                      kind: "plan",
+                      stage: "completed",
+                      message: "Step 5/6 completed",
+                      plan: cloneTodoPlan(todoPlan),
+                    })
+                  );
                   emitAgentProgress(
                     controller,
                     encoder,
@@ -1150,6 +1481,24 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                     controller,
                     encoder,
                     toAgentEvent({
+                      kind: "plan",
+                      stage: "error",
+                      message: "Step 5/6 failed",
+                      plan: cloneTodoPlan(updateTodoPlanStep(todoPlan, "step-5", {
+                        status: "failed",
+                        reason: String(roomToolError || roomResult.error || "Unknown error"),
+                      })),
+                    })
+                  );
+                  todoPlan = updateTodoPlanStep(todoPlan, "step-5", {
+                    status: "failed",
+                    reason: String(roomToolError || roomResult.error || "Unknown error"),
+                  });
+                  toolOutcomes.push({ toolName: "create_room", status: "failed", reason: String(roomToolError || roomResult.error || "Unknown error") });
+                  emitAgentProgress(
+                    controller,
+                    encoder,
+                    toAgentEvent({
                       kind: "tool",
                       stage: "error",
                       message: `Room creation skipped: ${roomToolError || roomResult.error}`,
@@ -1158,9 +1507,22 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                     })
                   );
                 }
+              } else {
+                toolOutcomes.push({ toolName: "create_room", status: "failed", reason: "Tool unavailable in live MCP catalog" });
               }
 
               if (canAnalyze) {
+                todoPlan = updateTodoPlanStep(todoPlan, "step-6", { status: "in_progress" });
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "plan",
+                    stage: "executing",
+                    message: "Step 6/6: verifying final model state",
+                    plan: cloneTodoPlan(todoPlan),
+                  })
+                );
                 const postAnalysisJob = await enqueueCommandForUser(userId, "analyze_layout_design", {
                   includeStructural: true,
                   includeArchitectural: true,
@@ -1175,11 +1537,45 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
 
                 if (!postAnalysisError) {
                   afterCounts = getAnalysisCounts(postAnalysisResult.result);
+                  toolOutcomes.push({ toolName: "analyze_layout_design (post-check)", status: "success" });
+                  todoPlan = updateTodoPlanStep(todoPlan, "step-6", { status: "completed" });
+                } else {
+                  toolOutcomes.push({ toolName: "analyze_layout_design (post-check)", status: "failed", reason: String(postAnalysisError) });
+                  todoPlan = updateTodoPlanStep(todoPlan, "step-6", {
+                    status: "failed",
+                    reason: String(postAnalysisError),
+                  });
                 }
+
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "plan",
+                    stage: todoPlan.find((s) => s.id === "step-6")?.status === "completed" ? "completed" : "error",
+                    message:
+                      todoPlan.find((s) => s.id === "step-6")?.status === "completed"
+                        ? "Step 6/6 completed"
+                        : "Step 6/6 failed",
+                    plan: cloneTodoPlan(todoPlan),
+                  })
+                );
+              } else {
+                toolOutcomes.push({ toolName: "analyze_layout_design (post-check)", status: "failed", reason: "Tool unavailable in live MCP catalog" });
               }
 
               finalResponse =
-                `2BHK copilot run finished with tool-aware execution. Before/After counts => walls: ${beforeCounts.walls}→${afterCounts.walls}, floors: ${beforeCounts.floors}→${afterCounts.floors}, rooms: ${beforeCounts.rooms}→${afterCounts.rooms}. Expand tool activity for exact step outcomes.`;
+                `2BHK copilot run finished with tool-aware execution. Before/After counts => walls: ${beforeCounts.walls}→${afterCounts.walls}, floors: ${beforeCounts.floors}→${afterCounts.floors}, rooms: ${beforeCounts.rooms}→${afterCounts.rooms}.\n\n${formatToolOutcomeSummary(toolOutcomes)}`;
+              emitAgentProgress(
+                controller,
+                encoder,
+                toAgentEvent({
+                  kind: "plan",
+                  stage: "completed",
+                  message: "Execution plan finished",
+                  plan: cloneTodoPlan(todoPlan),
+                })
+              );
               emitContentChunk(controller, encoder, finalResponse);
             } else {
               finalResponse =
@@ -1188,10 +1584,18 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                 controller,
                 encoder,
                 toAgentEvent({
-                  kind: "analysis",
+                  kind: "plan",
                   stage: "error",
-                  message: "Revit Agent is disconnected",
+                  message: "Execution blocked: Revit Agent disconnected",
                   details: "Realtime creation requires active local agent and open Revit session.",
+                  plan: [
+                    {
+                      id: "step-1",
+                      title: "Reconnect Datum Revit Agent",
+                      status: "blocked",
+                      reason: "No active Revit agent heartbeat",
+                    },
+                  ],
                 })
               );
               emitContentChunk(controller, encoder, finalResponse);
@@ -1255,19 +1659,39 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
       const readableStream = new ReadableStream({
         async start(controller) {
           try {
+            let todoPlan = buildTodoPlanFromToolCalls([
+              { toolName: autoToolCall.toolName, args: autoToolCall.args },
+            ]);
+
             emitAgentProgress(
               controller,
               encoder,
               toAgentEvent({
-                kind: "analysis",
+                kind: "plan",
                 stage: "planning",
                 message: `Planning execution for ${autoToolCall.toolName}`,
                 toolName: autoToolCall.toolName,
                 details: summarizeForDetails(autoToolCall.args, 700),
+                plan: cloneTodoPlan(todoPlan),
               })
             );
 
             if (revitConnected) {
+              todoPlan = updateTodoPlanStep(todoPlan, "step-1", {
+                status: "in_progress",
+              });
+              emitAgentProgress(
+                controller,
+                encoder,
+                toAgentEvent({
+                  kind: "plan",
+                  stage: "executing",
+                  message: `Executing step 1/1: ${autoToolCall.toolName}`,
+                  toolName: autoToolCall.toolName,
+                  plan: cloneTodoPlan(todoPlan),
+                })
+              );
+
               emitAgentProgress(
                 controller,
                 encoder,
@@ -1285,7 +1709,20 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
               const toolError = result.success ? getToolExecutionError(result.result) : null;
 
               if (result.success && !toolError) {
+                todoPlan = updateTodoPlanStep(todoPlan, "step-1", {
+                  status: "completed",
+                });
                 finalResponse = `Executed ${autoToolCall.toolName} successfully in Revit.\n\nResult:\n${JSON.stringify(result.result, null, 2)}`;
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "plan",
+                    stage: "completed",
+                    message: "Execution plan completed",
+                    plan: cloneTodoPlan(todoPlan),
+                  })
+                );
                 emitAgentProgress(
                   controller,
                   encoder,
@@ -1298,7 +1735,21 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                   })
                 );
               } else {
+                todoPlan = updateTodoPlanStep(todoPlan, "step-1", {
+                  status: "failed",
+                  reason: String(toolError || result.error || "Unknown error"),
+                });
                 finalResponse = `Execution failed for ${autoToolCall.toolName}: ${toolError || result.error}`;
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "plan",
+                    stage: "error",
+                    message: "Execution plan failed",
+                    plan: cloneTodoPlan(todoPlan),
+                  })
+                );
                 emitAgentProgress(
                   controller,
                   encoder,
@@ -1314,8 +1765,22 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
 
               controller.enqueue(encoder.encode(createSseData({ content: finalResponse })));
             } else {
+              todoPlan = updateTodoPlanStep(todoPlan, "step-1", {
+                status: "blocked",
+                reason: "Revit Agent is disconnected",
+              });
               finalResponse =
                 "I found an executable Revit action, but Revit Agent is disconnected. Connect Datum Revit Agent and keep Revit open, then retry.";
+              emitAgentProgress(
+                controller,
+                encoder,
+                toAgentEvent({
+                  kind: "plan",
+                  stage: "error",
+                  message: "Execution plan blocked",
+                  plan: cloneTodoPlan(todoPlan),
+                })
+              );
               emitAgentProgress(
                 controller,
                 encoder,

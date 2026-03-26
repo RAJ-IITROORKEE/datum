@@ -21,9 +21,16 @@ interface AgentProgressEvent {
   stage: "planning" | "executing" | "completed" | "error";
   message: string;
   toolName?: string;
-  kind?: "analysis" | "tool";
+  kind?: "analysis" | "tool" | "plan";
   details?: string;
   timestamp?: string;
+  plan?: Array<{
+    id: string;
+    title: string;
+    toolName?: string;
+    status: "pending" | "in_progress" | "completed" | "failed" | "blocked";
+    reason?: string;
+  }>;
 }
 
 interface ChatInterfaceProps {
@@ -99,6 +106,15 @@ export function ChatInterface({
 
   const analysisEvents = agentEvents.filter((event) => event.kind === "analysis");
   const toolEvents = agentEvents.filter((event) => event.kind === "tool");
+  const latestPlan = [...agentEvents].reverse().find((event) => event.kind === "plan" && event.plan)?.plan || [];
+
+  const getPlanStatusDotClass = (status: "pending" | "in_progress" | "completed" | "failed" | "blocked"): string => {
+    if (status === "completed") return "bg-green-500";
+    if (status === "failed") return "bg-red-500";
+    if (status === "blocked") return "bg-amber-500";
+    if (status === "in_progress") return "bg-blue-500";
+    return "bg-muted-foreground";
+  };
 
   const processStreamLine = (
     line: string,
@@ -333,6 +349,37 @@ export function ChatInterface({
                           <span className="truncate">{getVisibleAgentStatus()}</span>
                         </div>
                       </div>
+
+                      <Collapsible defaultOpen>
+                        <CollapsibleTrigger className="group flex w-full items-center justify-between rounded-md border border-blue-100 px-3 py-2 text-left text-xs font-medium text-muted-foreground hover:bg-blue-50/50 dark:border-blue-900/40 dark:hover:bg-blue-900/10">
+                          <span className="flex items-center gap-2">
+                            <Brain className="h-3.5 w-3.5" />
+                            Execution plan ({latestPlan.length} steps)
+                          </span>
+                          <ChevronDown className="h-3.5 w-3.5 transition-transform group-data-[state=open]:rotate-180" />
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="pt-2">
+                          {latestPlan.length === 0 ? (
+                            <p className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                              Plan will appear once the agent starts execution.
+                            </p>
+                          ) : (
+                            <div className="space-y-2 rounded-md border bg-muted/20 p-2">
+                              {latestPlan.map((step) => (
+                                <div key={step.id} className="rounded-md bg-background px-2 py-1.5">
+                                  <div className="mb-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+                                    <span className={cn("h-1.5 w-1.5 rounded-full", getPlanStatusDotClass(step.status))} />
+                                    <span className="uppercase tracking-wide">{step.status.replace("_", " ")}</span>
+                                    {step.toolName ? <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-foreground">{step.toolName}</span> : null}
+                                  </div>
+                                  <p className="text-xs text-foreground">{step.title}</p>
+                                  {step.reason ? <p className="mt-1 text-[11px] text-muted-foreground">{step.reason}</p> : null}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </CollapsibleContent>
+                      </Collapsible>
 
                       <Collapsible open={analysisOpen} onOpenChange={setAnalysisOpen}>
                         <CollapsibleTrigger className="group flex w-full items-center justify-between rounded-md border border-blue-100 px-3 py-2 text-left text-xs font-medium text-muted-foreground hover:bg-blue-50/50 dark:border-blue-900/40 dark:hover:bg-blue-900/10">
