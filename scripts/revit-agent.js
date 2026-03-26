@@ -69,7 +69,16 @@ function loadConfig() {
   try {
     if (!fs.existsSync(CONFIG_PATH)) return {};
     const raw = fs.readFileSync(CONFIG_PATH, "utf8");
-    return JSON.parse(raw);
+    const config = JSON.parse(raw);
+    
+    // Migrate old localhost URLs to production
+    if (config.datumUrl === "http://localhost:3000" || config.datumUrl === "http://127.0.0.1:3000") {
+      log("Migrating config: Updating localhost URL to production URL");
+      config.datumUrl = "https://datumcopilot.vercel.app";
+      saveConfig(config);
+    }
+    
+    return config;
   } catch {
     return {};
   }
@@ -88,11 +97,29 @@ function parsePortList(value) {
     .filter((port) => Number.isInteger(port) && port > 0 && port < 65536);
 }
 
+function parseUrlList(value) {
+  if (!value || typeof value !== "string") return [];
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function normalizeBaseUrl(value) {
+  if (!value || typeof value !== "string") return "";
+  return value.trim().replace(/\/+$/, "");
+}
+
 const args = parseArgs(process.argv.slice(2));
 const config = loadConfig();
 
 // Default to production URL for packaged builds, use IPv4 127.0.0.1 for local dev to avoid IPv6 issues
-const DATUM_URL = args.url || process.env.DATUM_URL || config.datumUrl || "https://datumcopilot.vercel.app";
+const DEFAULT_DATUM_URL = "https://datumcopilot.vercel.app";
+const configuredDatumUrl = normalizeBaseUrl(args.url || process.env.DATUM_URL || config.datumUrl || DEFAULT_DATUM_URL);
+const configuredDatumFallbacks = parseUrlList(
+  args.urlFallbacks || process.env.DATUM_URL_FALLBACKS || config.datumUrlFallbacks || ""
+).map((url) => normalizeBaseUrl(url));
+const DATUM_URLS = Array.from(new Set([configuredDatumUrl, ...configuredDatumFallbacks, DEFAULT_DATUM_URL].filter(Boolean)));
 const POLL_MS = Number(args.pollMs || process.env.AGENT_POLL_MS || config.pollMs || 1200);
 const HEARTBEAT_MS = Number(args.heartbeatMs || process.env.AGENT_HEARTBEAT_MS || config.heartbeatMs || 5000);
 const REVIT_HOST = args.revitHost || process.env.REVIT_HOST || config.revitHost || "127.0.0.1";
@@ -116,10 +143,12 @@ let token = args.token || process.env.REVIT_AGENT_TOKEN || config.token || "";
 let lockFd = null;
 let lastRevitOfflineLogAt = 0;
 let activeRevitPort = REVIT_PORTS[0];
+let activeDatumUrl = DATUM_URLS[0];
 
 function saveRuntimeConfig() {
   saveConfig({
-    datumUrl: DATUM_URL,
+    datumUrl: activeDatumUrl,
+    datumUrlFallbacks: DATUM_URLS.slice(1).join(","),
     revitHost: REVIT_HOST,
     revitPort: activeRevitPort,
     revitPorts: REVIT_PORTS.join(","),
@@ -268,8 +297,13 @@ function sendToLocalRevit(commandName, payload) {
   });
 }
 
-async function api(path, options = {}) {
-  const url = new URL(path, DATUM_URL);
+function isNetworkRetryableError(error) {
+  const code = error && typeof error === "object" ? error.code : "";
+  return code === "ETIMEDOUT" || code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "EAI_AGAIN";
+}
+
+function apiRequest(baseUrl, requestPath, options = {}) {
+  const url = new URL(requestPath, baseUrl);
   const headers = {
     "Content-Type": "application/json",
     ...(options.headers || {}),
@@ -316,7 +350,9 @@ async function api(path, options = {}) {
     );
 
     req.on("timeout", () => {
-      req.destroy(new Error("Request timed out"));
+      const timeoutError = new Error("Request timed out");
+      timeoutError.code = "ETIMEDOUT";
+      req.destroy(timeoutError);
     });
     req.on("error", reject);
 
@@ -325,6 +361,29 @@ async function api(path, options = {}) {
     }
     req.end();
   });
+}
+
+async function api(requestPath, options = {}) {
+  let lastError = null;
+
+  for (const baseUrl of DATUM_URLS) {
+    try {
+      const response = await apiRequest(baseUrl, requestPath, options);
+      if (activeDatumUrl !== baseUrl) {
+        activeDatumUrl = baseUrl;
+        saveRuntimeConfig();
+        log(`Switched Datum URL to: ${activeDatumUrl}`);
+      }
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (!isNetworkRetryableError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError || new Error("Failed to reach Datum API");
 }
 
 function canConnectToRevitPort(port, timeoutMs = REVIT_CONNECT_TIMEOUT_MS) {
@@ -490,6 +549,7 @@ async function main() {
     console.log("Datum Revit Agent");
     console.log("Options:");
     console.log("  --url <https://domain>");
+    console.log("  --urlFallbacks <https://a,https://b>");
     console.log("  --token <agent-token>");
     console.log("  --pair-code <code>");
     console.log("  --revitHost <host>");
@@ -535,7 +595,10 @@ async function main() {
     }
   }
 
-  log(`Datum URL: ${DATUM_URL}`);
+  log(`Datum URL: ${activeDatumUrl}`);
+  if (DATUM_URLS.length > 1) {
+    log(`Datum URL fallbacks: ${DATUM_URLS.slice(1).join(", ")}`);
+  }
   log(`Revit plugin sockets: ${REVIT_HOST} on [${REVIT_PORTS.join(", ")}]`);
   log(`Config: ${CONFIG_PATH}`);
   log(`Log file: ${LOG_PATH}`);

@@ -18,6 +18,30 @@ export async function GET(req: Request) {
     });
   }
 
+  const downloadsDir = path.join(process.cwd(), "public", "downloads");
+  if (fs.existsSync(downloadsDir)) {
+    const installerCandidates = fs
+      .readdirSync(downloadsDir)
+      .filter((file) => /^DatumRevitAgent-Installer-v.+\.exe$/i.test(file))
+      .map((file) => {
+        const fullPath = path.join(downloadsDir, file);
+        const stats = fs.statSync(fullPath);
+        return { file, mtimeMs: stats.mtimeMs };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+    if (installerCandidates.length > 0) {
+      const latestInstaller = installerCandidates[0];
+      const target = new URL(`/downloads/${latestInstaller.file}`, req.url);
+      target.searchParams.set("v", String(Math.floor(latestInstaller.mtimeMs)));
+
+      return NextResponse.redirect(target, {
+        status: 302,
+        headers: noCacheHeaders,
+      });
+    }
+  }
+
   const localExe = path.join(process.cwd(), "public", "downloads", "DatumRevitAgent.exe");
   if (fs.existsSync(localExe)) {
     const stats = fs.statSync(localExe);

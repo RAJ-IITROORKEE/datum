@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "revit-agent": "node scripts/revit-agent.js",
-    "build:revit-agent:exe": "pkg scripts/revit-agent.js --targets node18-win-x64 --output public/downloads/DatumRevitAgent.exe"
+    "build:revit-agent": "pkg scripts/revit-agent.js --targets node18-win-x64 --output scripts/build/DatumRevitAgent.exe",
+    "build:revit-agent:installer": "npm run build:revit-agent && \"C:\\Program Files (x86)\\NSIS\\makensis.exe\" scripts/installer.nsi"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.12.20",
