@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -11,13 +11,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Check, Copy, Download, ExternalLink, Link2, PlugZap, RefreshCw } from "lucide-react";
+import { AlertTriangle, Check, Copy, Download, ExternalLink, Link2, PlugZap, RefreshCw, Timer } from "lucide-react";
 
 type RevitStatusResponse = {
   connected: boolean;
   latestAgentVersion?: string;
   currentAgentVersion?: string | null;
   updateAvailable?: boolean;
+  sessionExpiresAt?: string | null;
   activeSession: {
     id: string;
     deviceName?: string | null;
@@ -34,6 +35,8 @@ export function RevitConnectionMenu() {
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [sessionExpired, setSessionExpired] = useState(false);
+  const [sessionTimeLeft, setSessionTimeLeft] = useState<string | null>(null);
   const downloadUrl = "/api/revit/agent/download";
 
   const refreshStatus = async () => {
@@ -41,13 +44,61 @@ export function RevitConnectionMenu() {
     if (!response.ok) return;
     const data = (await response.json()) as RevitStatusResponse;
     setStatus(data);
+    
+    // Check session expiry
+    if (data.sessionExpiresAt) {
+      const expiresAt = new Date(data.sessionExpiresAt).getTime();
+      const now = Date.now();
+      if (expiresAt <= now) {
+        setSessionExpired(true);
+        setSessionTimeLeft(null);
+      } else {
+        setSessionExpired(false);
+      }
+    } else if (!data.connected) {
+      setSessionExpired(false);
+      setSessionTimeLeft(null);
+    }
   };
+
+  // Update session time left every second
+  const updateTimeLeft = useCallback(() => {
+    if (!status?.sessionExpiresAt) {
+      setSessionTimeLeft(null);
+      return;
+    }
+    
+    const expiresAt = new Date(status.sessionExpiresAt).getTime();
+    const now = Date.now();
+    const diff = expiresAt - now;
+    
+    if (diff <= 0) {
+      setSessionExpired(true);
+      setSessionTimeLeft(null);
+      return;
+    }
+    
+    const minutes = Math.floor(diff / 60000);
+    const seconds = Math.floor((diff % 60000) / 1000);
+    
+    if (minutes > 0) {
+      setSessionTimeLeft(`${minutes}m ${seconds}s`);
+    } else {
+      setSessionTimeLeft(`${seconds}s`);
+    }
+  }, [status?.sessionExpiresAt]);
 
   useEffect(() => {
     refreshStatus();
-    const timer = setInterval(refreshStatus, 5000);
-    return () => clearInterval(timer);
+    const statusTimer = setInterval(refreshStatus, 5000);
+    return () => clearInterval(statusTimer);
   }, []);
+
+  useEffect(() => {
+    updateTimeLeft();
+    const timer = setInterval(updateTimeLeft, 1000);
+    return () => clearInterval(timer);
+  }, [updateTimeLeft]);
 
   const generatePairCode = async () => {
     setLoading(true);
@@ -58,6 +109,7 @@ export function RevitConnectionMenu() {
       setPairCode(data.code);
       setPairCodeExpiresAt(data.expiresAt);
       setCopied(false);
+      setSessionExpired(false);
     } finally {
       setLoading(false);
     }
@@ -89,32 +141,80 @@ export function RevitConnectionMenu() {
     }
   };
 
-  const expiryText = useMemo(() => {
+  const pairCodeExpiryText = useMemo(() => {
     if (!pairCodeExpiresAt) return null;
-    return new Date(pairCodeExpiresAt).toLocaleTimeString();
+    const expiresAt = new Date(pairCodeExpiresAt);
+    const now = new Date();
+    if (expiresAt <= now) return "Expired";
+    return expiresAt.toLocaleTimeString();
   }, [pairCodeExpiresAt]);
+
+  const isPairCodeExpired = useMemo(() => {
+    if (!pairCodeExpiresAt) return false;
+    return new Date(pairCodeExpiresAt) <= new Date();
+  }, [pairCodeExpiresAt]);
+
+  // Determine badge state
+  const getBadgeContent = () => {
+    if (sessionExpired) {
+      return { variant: "destructive" as const, text: "Session Expired" };
+    }
+    if (status?.connected) {
+      return { variant: "default" as const, text: sessionTimeLeft ? `${sessionTimeLeft}` : "Connected" };
+    }
+    return { variant: "secondary" as const, text: "Disconnected" };
+  };
+
+  const badgeState = getBadgeContent();
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="outline" size="sm" className="gap-2">
-          <Link2 className="h-4 w-4" />
+          {sessionExpired ? (
+            <AlertTriangle className="h-4 w-4 text-destructive" />
+          ) : (
+            <Link2 className="h-4 w-4" />
+          )}
           <span className="hidden sm:inline">Revit</span>
-          <Badge variant={status?.connected ? "default" : "secondary"}>
-            {status?.connected ? "Connected" : "Disconnected"}
+          <Badge variant={badgeState.variant} className={sessionExpired ? "animate-pulse" : ""}>
+            {sessionExpired && <Timer className="mr-1 h-3 w-3" />}
+            {badgeState.text}
           </Badge>
         </Button>
       </DropdownMenuTrigger>
 
       <DropdownMenuContent align="end" className="w-72">
-        <DropdownMenuLabel>Revit Agent</DropdownMenuLabel>
+        <DropdownMenuLabel className="flex items-center justify-between">
+          Revit Agent
+          {sessionExpired && (
+            <Badge variant="destructive" className="text-[10px]">
+              Session Expired
+            </Badge>
+          )}
+        </DropdownMenuLabel>
+        
+        {sessionExpired && (
+          <>
+            <div className="mx-2 mb-2 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              <div className="flex items-center gap-2 font-medium">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                Connection Expired
+              </div>
+              <p className="mt-1 text-[11px] opacity-80">
+                Generate a new pairing code to reconnect.
+              </p>
+            </div>
+          </>
+        )}
+        
         <DropdownMenuItem onClick={refreshStatus}>
           <RefreshCw className="h-4 w-4" />
           Refresh status
         </DropdownMenuItem>
         <DropdownMenuItem onClick={generatePairCode} disabled={loading}>
           <Link2 className="h-4 w-4" />
-          {loading ? "Generating..." : "Generate pair code"}
+          {loading ? "Generating..." : sessionExpired ? "Reconnect (New Code)" : "Generate pair code"}
         </DropdownMenuItem>
         <DropdownMenuItem onClick={disconnectRevitAgent} disabled={!status?.connected || disconnecting}>
           <PlugZap className="h-4 w-4" />
@@ -156,9 +256,9 @@ export function RevitConnectionMenu() {
         {pairCode ? (
           <>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={copyPairCode}>
+            <DropdownMenuItem onClick={copyPairCode} disabled={isPairCodeExpired}>
               {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-              {copied ? "Code copied" : "Copy pairing code"}
+              {copied ? "Code copied" : isPairCodeExpired ? "Code expired" : "Copy pairing code"}
             </DropdownMenuItem>
             <DropdownMenuItem asChild>
               <a href="/revit-agent-setup.md" target="_blank" rel="noreferrer">
@@ -168,13 +268,19 @@ export function RevitConnectionMenu() {
             </DropdownMenuItem>
             <div className="px-2 py-1.5">
               <div className="mb-1 text-[11px] text-muted-foreground">Pairing code</div>
-              <div className="flex items-center justify-between rounded-md border px-2 py-1">
-                <span className="font-semibold tracking-wider">{pairCode}</span>
-                <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={copyPairCode}>
+              <div className={`flex items-center justify-between rounded-md border px-2 py-1 ${isPairCodeExpired ? "border-destructive/50 bg-destructive/10" : ""}`}>
+                <span className={`font-semibold tracking-wider ${isPairCodeExpired ? "text-muted-foreground line-through" : ""}`}>
+                  {pairCode}
+                </span>
+                <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={copyPairCode} disabled={isPairCodeExpired}>
                   {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                 </Button>
               </div>
-              {expiryText ? <div className="mt-1 text-[11px] text-muted-foreground">Expires at {expiryText}</div> : null}
+              {pairCodeExpiryText ? (
+                <div className={`mt-1 text-[11px] ${isPairCodeExpired ? "text-destructive" : "text-muted-foreground"}`}>
+                  {isPairCodeExpired ? "Code expired - generate a new one" : `Expires at ${pairCodeExpiryText}`}
+                </div>
+              ) : null}
             </div>
           </>
         ) : null}

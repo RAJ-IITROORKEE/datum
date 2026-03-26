@@ -3,7 +3,7 @@ import { auth } from "@clerk/nextjs/server";
 import { prisma } from "@/lib/prisma";
 import { generatePairingCode } from "@/lib/revit-agent/auth";
 
-const PAIRING_TTL_MINUTES = 10;
+const PAIRING_TTL_MINUTES = 60; // 1 hour expiry
 
 export async function POST() {
   try {

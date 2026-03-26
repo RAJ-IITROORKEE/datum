@@ -3,7 +3,8 @@ import { auth } from "@clerk/nextjs/server";
 import { prisma } from "@/lib/prisma";
 
 const ONLINE_WINDOW_MS = 30_000;
-const LATEST_AGENT_VERSION = process.env.REVIT_AGENT_LATEST_VERSION || "1.1.0";
+const SESSION_TTL_MS = 60 * 60 * 1000; // 1 hour session validity
+const LATEST_AGENT_VERSION = process.env.REVIT_AGENT_LATEST_VERSION || "1.3.0";
 
 function toVersionParts(version: string): number[] {
   return version
@@ -52,11 +53,21 @@ export async function GET() {
         ? isVersionOlder(currentAgentVersion, LATEST_AGENT_VERSION)
         : false;
 
+    // Calculate session expiry time (1 hour from creation or last pairing)
+    let sessionExpiresAt: string | null = null;
+    if (active) {
+      // Session expires 1 hour from when it was created
+      const createdAt = new Date(active.createdAt).getTime();
+      const expiresAt = createdAt + SESSION_TTL_MS;
+      sessionExpiresAt = new Date(expiresAt).toISOString();
+    }
+
     return NextResponse.json({
       connected: Boolean(active),
       latestAgentVersion: LATEST_AGENT_VERSION,
       currentAgentVersion,
       updateAvailable,
+      sessionExpiresAt,
       activeSession: active
         ? {
             id: active.id,

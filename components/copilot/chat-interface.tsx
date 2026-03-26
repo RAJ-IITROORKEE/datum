@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -11,11 +11,15 @@ import {
   Bot, 
   Brain, 
   CheckCircle2,
-  ChevronDown, 
+  ChevronDown,
+  Code2,
   Loader2,
   PanelLeft, 
+  Pause,
+  Play,
   Plus, 
   RefreshCw,
+  Square,
   Unplug,
   Wrench,
   Zap 
@@ -56,6 +60,135 @@ interface ConnectionStatus {
   lastChecked: number;
 }
 
+// Parse message content to separate text from code/JSON blocks
+interface ContentBlock {
+  type: "text" | "code" | "json" | "command";
+  content: string;
+  language?: string;
+}
+
+function parseMessageContent(content: string): ContentBlock[] {
+  const blocks: ContentBlock[] = [];
+  
+  // Regex to find code blocks: ```language\ncode\n```
+  const codeBlockRegex = /```(\w*)\n?([\s\S]*?)```/g;
+  // Regex to find inline JSON objects (starting with { and ending with })
+  const jsonRegex = /(\{[\s\S]*?"[\s\S]*?:[\s\S]*?\})/g;
+  // Regex to find /run commands
+  const commandRegex = /(\/run\s+\w+\s+\{[\s\S]*?\})/g;
+  
+  let lastIndex = 0;
+  let match;
+  
+  // First pass: extract code blocks
+  const codeMatches: Array<{ start: number; end: number; block: ContentBlock }> = [];
+  while ((match = codeBlockRegex.exec(content)) !== null) {
+    codeMatches.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      block: {
+        type: match[1] === "json" ? "json" : "code",
+        content: match[2].trim(),
+        language: match[1] || "text",
+      },
+    });
+  }
+  
+  // Process content with code blocks
+  for (const codeMatch of codeMatches) {
+    if (codeMatch.start > lastIndex) {
+      const textBefore = content.slice(lastIndex, codeMatch.start).trim();
+      if (textBefore) {
+        blocks.push({ type: "text", content: textBefore });
+      }
+    }
+    blocks.push(codeMatch.block);
+    lastIndex = codeMatch.end;
+  }
+  
+  // Add remaining text
+  if (lastIndex < content.length) {
+    const remaining = content.slice(lastIndex).trim();
+    if (remaining) {
+      // Check if remaining contains large JSON (more than 100 chars of JSON-like content)
+      const jsonLikeContent = remaining.match(/\{[\s\S]{100,}\}/);
+      if (jsonLikeContent) {
+        const jsonStart = remaining.indexOf(jsonLikeContent[0]);
+        if (jsonStart > 0) {
+          blocks.push({ type: "text", content: remaining.slice(0, jsonStart).trim() });
+        }
+        blocks.push({ type: "json", content: jsonLikeContent[0] });
+        const afterJson = remaining.slice(jsonStart + jsonLikeContent[0].length).trim();
+        if (afterJson) {
+          blocks.push({ type: "text", content: afterJson });
+        }
+      } else {
+        blocks.push({ type: "text", content: remaining });
+      }
+    }
+  }
+  
+  // If no blocks were created, return the whole content as text
+  if (blocks.length === 0) {
+    blocks.push({ type: "text", content });
+  }
+  
+  return blocks;
+}
+
+// Smart message content renderer
+function MessageContent({ content, isUser }: { content: string; isUser: boolean }) {
+  const blocks = useMemo(() => parseMessageContent(content), [content]);
+  const hasCodeOrJson = blocks.some((b) => b.type === "code" || b.type === "json");
+  
+  if (!hasCodeOrJson || isUser) {
+    // Simple render for user messages or messages without code
+    return (
+      <p className={cn(
+        "wrap-break-word whitespace-pre-wrap text-sm sm:text-base",
+        isUser ? "text-white" : "text-foreground"
+      )}>
+        {content}
+      </p>
+    );
+  }
+  
+  return (
+    <div className="space-y-3">
+      {blocks.map((block, index) => {
+        if (block.type === "text") {
+          return (
+            <p key={index} className="wrap-break-word whitespace-pre-wrap text-sm sm:text-base text-foreground">
+              {block.content}
+            </p>
+          );
+        }
+        
+        if (block.type === "code" || block.type === "json") {
+          return (
+            <Collapsible key={index} defaultOpen={false}>
+              <CollapsibleTrigger className="group flex w-full items-center justify-between rounded-md border border-muted-foreground/20 bg-muted/30 px-3 py-2 text-left text-xs font-medium text-muted-foreground hover:bg-muted/50 transition-colors">
+                <span className="flex items-center gap-2">
+                  <Code2 className="h-3.5 w-3.5" />
+                  {block.type === "json" ? "JSON Output" : `Code (${block.language || "text"})`}
+                </span>
+                <ChevronDown className="h-3.5 w-3.5 transition-transform group-data-[state=open]:rotate-180" />
+              </CollapsibleTrigger>
+              <CollapsibleContent className="pt-2">
+                <pre className="overflow-x-auto rounded-md bg-zinc-900 p-3 text-xs text-zinc-100 dark:bg-zinc-950">
+                  <code>{block.content}</code>
+                </pre>
+              </CollapsibleContent>
+            </Collapsible>
+          );
+        }
+        
+        return null;
+      })}
+    </div>
+  );
+}
+
 interface ChatInterfaceProps {
   conversationId: string | null;
   onConversationCreated: (id: string) => void;
@@ -82,8 +215,28 @@ export function ChatInterface({
     lastChecked: 0,
   });
   const [connectionLostDuringExecution, setConnectionLostDuringExecution] = useState(false);
+  const [queuedMessages, setQueuedMessages] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const connectionCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Stop the current agent execution
+  const handleStop = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsLoading(false);
+    setAgentEvents((prev) => [
+      ...prev,
+      {
+        stage: "error",
+        message: "Execution stopped by user",
+        kind: "tool",
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+  }, []);
 
   // Check connection status
   const checkConnectionStatus = useCallback(async () => {
@@ -271,7 +424,17 @@ export function ChatInterface({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isLoading) return;
+    
+    // If loading, queue the message instead of blocking
+    if (isLoading) {
+      if (input.trim()) {
+        setQueuedMessages((prev) => [...prev, input.trim()]);
+        setInput("");
+      }
+      return;
+    }
+    
+    if (!input.trim()) return;
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -286,6 +449,9 @@ export function ChatInterface({
     setAnalysisOpen(false);
     setToolsOpen(false);
     setConnectionLostDuringExecution(false);
+
+    // Create abort controller for this request
+    abortControllerRef.current = new AbortController();
 
     try {
       const allMessages = [...messages, userMessage].map((msg) => ({
@@ -303,6 +469,7 @@ export function ChatInterface({
           model,
           conversationId,
         }),
+        signal: abortControllerRef.current.signal,
       });
 
       if (!response.ok) {
@@ -323,11 +490,31 @@ export function ChatInterface({
         await streamAssistantResponse(reader, decoder, assistantMessage);
       }
     } catch (error) {
-      console.error("Error sending message:", error);
-      setMessages((prev) => prev.slice(0, -1));
+      if (error instanceof Error && error.name === "AbortError") {
+        // Request was aborted by user, don't show error
+        console.log("Request aborted by user");
+      } else {
+        console.error("Error sending message:", error);
+        setMessages((prev) => prev.slice(0, -1));
+      }
     } finally {
       setIsLoading(false);
       setConnectionLostDuringExecution(false);
+      abortControllerRef.current = null;
+      
+      // Process queued messages if any
+      if (queuedMessages.length > 0) {
+        const nextMessage = queuedMessages[0];
+        setQueuedMessages((prev) => prev.slice(1));
+        setInput(nextMessage);
+        // Auto-submit after a short delay
+        setTimeout(() => {
+          const form = document.querySelector("form");
+          if (form) {
+            form.requestSubmit();
+          }
+        }, 100);
+      }
     }
   };
 
@@ -469,14 +656,7 @@ export function ChatInterface({
                     {message.role === "user" ? "U" : "AI"}
                   </div>
                   <div className="flex-1 space-y-2 overflow-hidden">
-                    <p
-                      className={cn(
-                        "wrap-break-word whitespace-pre-wrap text-sm sm:text-base",
-                        message.role === "user" ? "text-white" : "text-foreground"
-                      )}
-                    >
-                      {message.content}
-                    </p>
+                    <MessageContent content={message.content} isUser={message.role === "user"} />
                   </div>
                 </div>
               </div>
@@ -603,6 +783,14 @@ export function ChatInterface({
 
       {/* Input */}
       <div className="mx-auto w-full max-w-3xl p-2 sm:p-3 md:p-4">
+        {/* Queued messages indicator */}
+        {queuedMessages.length > 0 && (
+          <div className="mb-2 flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-400">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            <span>{queuedMessages.length} message{queuedMessages.length > 1 ? "s" : ""} queued</span>
+          </div>
+        )}
+        
         <form
           onSubmit={handleSubmit}
           className="flex flex-col gap-1.5 sm:gap-2 rounded-2xl border border-blue-100 bg-card p-1.5 sm:p-2 shadow-lg dark:border-blue-900/40"
@@ -616,9 +804,8 @@ export function ChatInterface({
                 handleSubmit(e);
               }
             }}
-            placeholder="How can I help you today? (Tip: /run get_levels_list {})"
+            placeholder={isLoading ? "Type to queue your next message..." : "How can I help you today? (Tip: /run get_levels_list {})"}
             className="min-h-12 sm:min-h-15 w-full resize-none border-0 bg-transparent text-sm sm:text-base text-foreground outline-none focus-visible:ring-0"
-            disabled={isLoading}
           />
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-1.5 sm:gap-2">
@@ -634,14 +821,38 @@ export function ChatInterface({
                 {model.split("/")[1]}
               </span>
             </div>
-            <Button
-              type="submit"
-              size="icon"
-              className="h-7 w-7 sm:h-8 sm:w-8 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
-              disabled={!input.trim() || isLoading}
-            >
-              <ArrowUp className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-            </Button>
+            <div className="flex items-center gap-2">
+              {isLoading && (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="destructive"
+                  className="h-7 w-7 sm:h-8 sm:w-8 rounded-lg"
+                  onClick={handleStop}
+                  title="Stop execution"
+                >
+                  <Square className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
+                </Button>
+              )}
+              <Button
+                type="submit"
+                size="icon"
+                className={cn(
+                  "h-7 w-7 sm:h-8 sm:w-8 rounded-lg",
+                  isLoading
+                    ? "bg-amber-500 text-white hover:bg-amber-600"
+                    : "bg-blue-600 text-white hover:bg-blue-700"
+                )}
+                disabled={!input.trim()}
+                title={isLoading ? "Queue message" : "Send message"}
+              >
+                {isLoading ? (
+                  <Plus className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+                ) : (
+                  <ArrowUp className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+                )}
+              </Button>
+            </div>
           </div>
         </form>
       </div>

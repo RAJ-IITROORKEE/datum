@@ -16,7 +16,7 @@ const APP_DIR = path.join(os.homedir(), "AppData", "Roaming", "DatumRevitAgent")
 const CONFIG_PATH = process.env.DATUM_AGENT_CONFIG || path.join(APP_DIR, "config.json");
 const LOG_PATH = path.join(APP_DIR, "agent.log");
 const LOCK_PATH = path.join(APP_DIR, "agent.lock");
-const AGENT_VERSION = "1.2.0";
+const AGENT_VERSION = "1.3.0";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TERMINAL COLORS & STYLING
@@ -453,7 +453,9 @@ function sendToLocalRevit(commandName, payload) {
 
     socket.connect(activeRevitPort, REVIT_HOST, () => {
       const request = jsonRpcRequest(commandName, payload);
-      log(`Sending to Revit: ${c.tool(commandName)}`, "tool");
+      log(`Sending to Revit: ${c.tool(commandName)} on port ${activeRevitPort}`, "tool");
+      log(`  Request ID: ${request.id}`, "dim");
+      log(`  Payload keys: ${Object.keys(payload || {}).join(", ") || "(empty)"}`, "dim");
       socket.write(JSON.stringify(request));
     });
 
@@ -463,10 +465,21 @@ function sendToLocalRevit(commandName, payload) {
         const response = JSON.parse(buffer);
         clearTimeout(timer);
         socket.end();
+        
+        // Log response details
         if (response.error) {
+          log(`  Revit returned error: ${response.error.message || JSON.stringify(response.error)}`, "error");
           reject(new Error(response.error.message || "Revit command failed"));
           return;
         }
+        
+        // Log success details
+        const resultType = typeof response.result;
+        const resultPreview = resultType === "object" 
+          ? `Object with keys: ${Object.keys(response.result || {}).slice(0, 5).join(", ")}`
+          : String(response.result).substring(0, 100);
+        log(`  Revit response: ${c.success("OK")} - ${resultPreview}`, "success");
+        
         resolve(response.result);
       } catch {
         // wait for complete response
@@ -752,7 +765,10 @@ async function commandLoop() {
       const jobs = pull?.jobs || [];
 
       for (const job of jobs) {
+        console.log(""); // Visual separator
+        log(`${"═".repeat(50)}`, "info");
         log(`Executing command: ${c.tool(job.commandName)}`, "tool");
+        log(`  Job ID: ${job.id}`, "dim");
         const startTime = Date.now();
         
         try {
@@ -770,7 +786,8 @@ async function commandLoop() {
           
           stats.commandsExecuted++;
           stats.lastCommandAt = Date.now();
-          log(`Command ${c.tool(job.commandName)} completed in ${duration}ms`, "success");
+          log(`Command ${c.tool(job.commandName)} ${c.success("COMPLETED")} in ${duration}ms`, "success");
+          log(`${"═".repeat(50)}`, "info");
           
         } catch (error) {
           const duration = Date.now() - startTime;
@@ -785,7 +802,9 @@ async function commandLoop() {
           });
           
           stats.commandsFailed++;
-          log(`Command ${c.tool(job.commandName)} failed after ${duration}ms: ${error.message}`, "error");
+          log(`Command ${c.tool(job.commandName)} ${c.error("FAILED")} after ${duration}ms`, "error");
+          log(`  Error: ${error.message}`, "error");
+          log(`${"═".repeat(50)}`, "info");
         }
       }
     } catch (error) {

@@ -1,7 +1,7 @@
 ; See installer.nsi for comments
 
 !define APP_NAME "DatumRevitAgent"
-!define APP_VERSION "1.2.0"
+!define APP_VERSION "1.3.0"
 !define EXE_NAME "DatumRevitAgent.exe"
 !define INSTALLER_NAME "DatumRevitAgent-Installer-v${APP_VERSION}.exe"
 !define PRODUCT_NAME "Datum Revit Agent"
