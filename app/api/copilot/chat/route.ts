@@ -243,6 +243,31 @@ function has2BhkIntentInContext(messages: Array<{ role: string; content: unknown
   return containsAny(joined, ["2bhk", "2 bhk", "two bedroom", "flat layout", "simple 2bhk"]);
 }
 
+function hasBuildIntentInContext(messages: Array<{ role: string; content: unknown }>): boolean {
+  const joined = messages
+    .map((message) => (typeof message.content === "string" ? message.content : ""))
+    .join("\n")
+    .toLowerCase();
+
+  const hasBuildVerb = containsAny(joined, ["create", "build", "make", "design", "construct", "generate", "add", "model"]);
+  const hasRevitObject = containsAny(joined, [
+    "bhk",
+    "bedroom",
+    "house",
+    "flat",
+    "layout",
+    "plan",
+    "wall",
+    "room",
+    "floor",
+    "kitchen",
+    "bathroom",
+    "living",
+  ]);
+
+  return hasBuildVerb && hasRevitObject;
+}
+
 function extractFirstLevelId(result: unknown): number | null {
   const raw = JSON.stringify(result ?? "");
   const levelRegex = /"(?:levelId|id)"\s*:\s*(\d+)/i;
@@ -599,6 +624,33 @@ interface AgenticPlan {
   clarificationQuestion?: string;
 }
 
+function normalizeAgenticSteps(
+  steps: AgenticPlanStep[] | null | undefined,
+  availableToolNames: Set<string>
+): AgenticPlanStep[] {
+  if (!Array.isArray(steps)) return [];
+
+  return steps.filter((step) => {
+    if (!step || typeof step !== "object") return false;
+    if (!step.toolName || typeof step.toolName !== "string") return false;
+
+    const resolvedName = resolveToolAlias(step.toolName);
+    if (availableToolNames.has(resolvedName) || availableToolNames.has(step.toolName)) {
+      step.toolName = availableToolNames.has(step.toolName) ? step.toolName : resolvedName;
+      if (!step.args || typeof step.args !== "object" || Array.isArray(step.args)) {
+        step.args = {};
+      }
+      if (!step.description || typeof step.description !== "string") {
+        step.description = `Run ${step.toolName}`;
+      }
+      return true;
+    }
+
+    console.warn(`Agentic planning: Skipping unavailable tool "${step.toolName}"`);
+    return false;
+  });
+}
+
 const AGENTIC_PLANNING_PROMPT = `You are an expert BIM/Revit automation planner. Analyze the user's request and create a concrete execution plan using the available tools.
 
 CRITICAL: You MUST create an executable plan. Do NOT ask for more information unless absolutely necessary for safety/correctness. Make reasonable assumptions when details are missing (e.g., use default level if not specified, use standard dimensions if not provided).
@@ -693,7 +745,8 @@ Respond with ONLY valid JSON:
 async function generateAgenticPlan(
   userRequest: string,
   toolsList: string,
-  context: string
+  context: string,
+  availableToolNames: Set<string>
 ): Promise<AgenticPlan> {
   const prompt = AGENTIC_PLANNING_PROMPT
     .replace("{TOOLS_LIST}", toolsList)
@@ -715,14 +768,19 @@ async function generateAgenticPlan(
     const content = response.choices?.[0]?.message?.content || "";
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
+      console.error("Agentic planning: No JSON found in response", content);
       return { analysis: "Failed to parse plan", steps: [], needsMoreInfo: true, clarificationQuestion: "Could you please rephrase your request?" };
     }
 
     const parsed = JSON.parse(jsonMatch[0]) as AgenticPlan;
+    
+    // Validate and filter steps to only include available tools
+    parsed.steps = normalizeAgenticSteps(parsed.steps, availableToolNames);
+    
     return parsed;
   } catch (error) {
     console.error("Agentic planning error:", error);
-    return { analysis: "Planning failed", steps: [], needsMoreInfo: true, clarificationQuestion: "An error occurred. Please try again." };
+    return { analysis: "Planning failed", steps: [], needsMoreInfo: true, clarificationQuestion: "An error occurred while planning. Please try again." };
   }
 }
 
@@ -1292,11 +1350,13 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
     const availableToolNames = new Set(mcpTools.map((tool) => tool.name));
     const isToolAvailable = (name: string) => !mcpCatalogAvailable || availableToolNames.has(name);
     const continue2BhkWorkflow = has2BhkIntentInContext(messages) && isContinuationIntent(userText);
+    const continueBuildWorkflow = hasBuildIntentInContext(messages) && isContinuationIntent(userText);
+    const isAgenticBuildRequest = requiresAgenticMode(userText) || continueBuildWorkflow;
     const isHouseWorkflowIntent =
       is2BhkBuildIntent(userText) ||
       isSimpleTwoRoomHouseIntent(userText) ||
       continue2BhkWorkflow;
-    const canRun2BhkWorkflow = revitConnected && isHouseWorkflowIntent;
+    const canRun2BhkWorkflow = revitConnected && isHouseWorkflowIntent && !isAgenticBuildRequest;
 
     if (!revitConnected && isRevitExecutionBuildIntent(userText)) {
       const disconnectedExecutionText =
@@ -1873,7 +1933,9 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
     }
 
     const autoToolCall =
-      enableMCP && mcpCatalogAvailable ? resolveAutoToolCall(userText, availableToolNames) : null;
+      enableMCP && mcpCatalogAvailable && !isAgenticBuildRequest
+        ? resolveAutoToolCall(userText, availableToolNames)
+        : null;
 
     if (autoToolCall) {
       const encoder = new TextEncoder();
@@ -2030,8 +2092,20 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
             controller.enqueue(encoder.encode("data: [DONE]\n\n"));
             controller.close();
           } catch (error) {
-            console.error("Agentic execution error:", error);
-            controller.error(error);
+            console.error("Auto tool execution error:", error);
+            const errorMessage = error instanceof Error ? error.message : "Unknown execution error";
+            const fallbackResponse = `Tool execution failed: ${errorMessage}`;
+            emitContentChunk(controller, encoder, fallbackResponse);
+            await prisma.chatMessage.create({
+              data: {
+                conversationId: conversation.id,
+                role: "assistant",
+                content: fallbackResponse,
+              },
+            });
+            controller.enqueue(encoder.encode(createSseData({ conversationId: conversation.id })));
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
           }
         },
       });
@@ -2049,7 +2123,7 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
     // LLM-DRIVEN AGENTIC MODE
     // For complex multi-step tasks, use the LLM to plan and execute dynamically
     // ========================================================================
-    const shouldUseAgenticMode = revitConnected && mcpCatalogAvailable && requiresAgenticMode(userText);
+    const shouldUseAgenticMode = revitConnected && mcpCatalogAvailable && isAgenticBuildRequest;
     
     // Debug logging
     console.log("[AGENTIC MODE CHECK]", {
@@ -2085,7 +2159,7 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
               })
             );
 
-            const plan = await generateAgenticPlan(userText, toolsList, contextMessages);
+            const plan = await generateAgenticPlan(userText, toolsList, contextMessages, availableToolNames);
 
             if (plan.needsMoreInfo) {
               // Need clarification from user
@@ -2163,7 +2237,7 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
               stepNumber++;
 
               // Update plan status
-              const stepId = `step-${completedSteps.length + 1}`;
+              const stepId = `step-${stepNumber}`;
               todoPlan = todoPlan.map((s) => 
                 s.id === stepId ? { ...s, status: "in_progress" as AgentTodoStepStatus } : s
               );
@@ -2195,6 +2269,15 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
               // Execute the tool
               const resolvedToolName = resolveToolAlias(currentStep.toolName);
               let normalizedArgs = currentStep.args;
+
+              if (!availableToolNames.has(resolvedToolName)) {
+                const unavailableMessage = `Tool not available in current MCP catalog: ${resolvedToolName}`;
+                toolOutcomes.push({ toolName: resolvedToolName, status: "failed", reason: unavailableMessage });
+                todoPlan = todoPlan.map((s) =>
+                  s.id === stepId ? { ...s, status: "failed" as AgentTodoStepStatus, reason: unavailableMessage } : s
+                );
+                continue;
+              }
 
               // Apply normalizations for create_wall
               if (resolvedToolName === "create_wall") {
@@ -2260,13 +2343,24 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                   } else if (continuation.action === "error_stop") {
                     finalResponse = continuation.finalSummary || "Execution stopped due to an error.";
                     break;
+                  } else if (continuation.action === "continue" && continuation.nextStep) {
+                    const nextSteps = normalizeAgenticSteps([continuation.nextStep], availableToolNames);
+                    if (nextSteps.length > 0) {
+                      remainingSteps = [...nextSteps, ...remainingSteps];
+                      todoPlan.push({
+                        id: `step-${todoPlan.length + 1}`,
+                        title: nextSteps[0].description,
+                        toolName: nextSteps[0].toolName,
+                        status: "pending",
+                      });
+                    }
                   } else if (continuation.action === "add_steps" && continuation.additionalSteps) {
                     // Add new steps to the plan
-                    const newSteps = continuation.additionalSteps;
+                    const newSteps = normalizeAgenticSteps(continuation.additionalSteps, availableToolNames);
                     remainingSteps = [...remainingSteps, ...newSteps];
                     
                     // Update todo plan with new steps
-                    newSteps.forEach((step, i) => {
+                    newSteps.forEach((step) => {
                       todoPlan.push({
                         id: `step-${todoPlan.length + 1}`,
                         title: step.description,
@@ -2321,6 +2415,32 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                 if (continuation.action === "error_stop") {
                   finalResponse = continuation.finalSummary || `Execution stopped: ${errorMessage}`;
                   break;
+                }
+                if (continuation.nextStep) {
+                  const nextSteps = normalizeAgenticSteps([continuation.nextStep], availableToolNames);
+                  if (nextSteps.length > 0) {
+                    remainingSteps = [...nextSteps, ...remainingSteps];
+                    todoPlan.push({
+                      id: `step-${todoPlan.length + 1}`,
+                      title: nextSteps[0].description,
+                      toolName: nextSteps[0].toolName,
+                      status: "pending",
+                    });
+                  }
+                }
+                if (continuation.additionalSteps && continuation.additionalSteps.length > 0) {
+                  const nextSteps = normalizeAgenticSteps(continuation.additionalSteps, availableToolNames);
+                  if (nextSteps.length > 0) {
+                    remainingSteps = [...nextSteps, ...remainingSteps];
+                    nextSteps.forEach((step) => {
+                      todoPlan.push({
+                        id: `step-${todoPlan.length + 1}`,
+                        title: step.description,
+                        toolName: step.toolName,
+                        status: "pending",
+                      });
+                    });
+                  }
                 }
                 // Otherwise continue with remaining steps
               }
