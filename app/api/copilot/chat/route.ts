@@ -149,12 +149,54 @@ function applyBaseLevelIdToWalls(
 }
 
 async function resolveDefaultLevelIdForUser(clerkUserId: string): Promise<number | null> {
-  const levelsJob = await enqueueCommandForUser(clerkUserId, "get_levels_list", {});
-  const levelsResult = await waitForCommandResult(levelsJob.id);
+  const levelsResult = await executeRevitToolForUser(clerkUserId, "get_levels_list", {});
   if (!levelsResult.success) {
     return null;
   }
   return extractFirstLevelId(levelsResult.result);
+}
+
+async function executeRevitToolForUser(
+  clerkUserId: string,
+  toolName: string,
+  args: Record<string, unknown>,
+  options?: { preferMcp?: boolean; allowLegacyFallback?: boolean }
+): Promise<{ success: true; result: unknown; transport: "mcp" | "legacy" } | { success: false; error: string; transport: "mcp" | "legacy" }> {
+  const preferMcp = options?.preferMcp ?? true;
+  const allowLegacyFallback = options?.allowLegacyFallback ?? true;
+
+  if (preferMcp) {
+    try {
+      const mcpClient = getMCPClient();
+      const mcpResult = await mcpClient.callTool(toolName, args);
+      const toolError = mcpResult.success ? getToolExecutionError(mcpResult.result) : null;
+
+      if (mcpResult.success && !toolError) {
+        return { success: true, result: mcpResult.result, transport: "mcp" };
+      }
+
+      const mcpError = toolError || mcpResult.error || `MCP tool call failed for ${toolName}`;
+      if (!allowLegacyFallback) {
+        return { success: false, error: mcpError, transport: "mcp" };
+      }
+    } catch (error) {
+      if (!allowLegacyFallback) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : `MCP tool call failed for ${toolName}`,
+          transport: "mcp",
+        };
+      }
+    }
+  }
+
+  const job = await enqueueCommandForUser(clerkUserId, toolName, args);
+  const result = await waitForCommandResult(job.id);
+  if (result.success) {
+    return { success: true, result: result.result, transport: "legacy" };
+  }
+
+  return { success: false, error: result.error, transport: "legacy" };
 }
 
 function emitContentChunk(
@@ -994,9 +1036,18 @@ export async function POST(req: NextRequest) {
           where: { clerkUserId: userId },
           orderBy: { lastSeenAt: "desc" },
         });
-        const manualRevitConnected =
+        const manualLegacyConnected =
           !!recentManualAgentSession &&
           Date.now() - new Date(recentManualAgentSession.lastSeenAt).getTime() <= 30_000;
+        let manualMcpConnected = false;
+        if (enableMCP) {
+          try {
+            manualMcpConnected = await getMCPClient().testConnection();
+          } catch {
+            manualMcpConnected = false;
+          }
+        }
+        const manualRevitConnected = manualMcpConnected || manualLegacyConnected;
 
         const encoder = new TextEncoder();
         let finalResponse = "";
@@ -1049,8 +1100,7 @@ export async function POST(req: NextRequest) {
                 );
                 emitContentChunk(controller, encoder, "Starting plan analysis in Revit...\n\n");
 
-                const analysisJob = await enqueueCommandForUser(userId, "analyze_layout_design", parsedArgs);
-                const analysisResult = await waitForCommandResult(analysisJob.id);
+                const analysisResult = await executeRevitToolForUser(userId, "analyze_layout_design", parsedArgs);
                 if (!analysisResult.success) {
                   throw new Error(`Plan analysis failed: ${analysisResult.error}`);
                 }
@@ -1104,8 +1154,7 @@ export async function POST(req: NextRequest) {
                 todoPlan = updateTodoPlanStep(todoPlan, "step-2", { status: "completed" });
                 emitContentChunk(controller, encoder, "Analysis complete. Fetching model levels and preparing wall placement...\n\n");
 
-                const levelsJob = await enqueueCommandForUser(userId, "get_levels_list", {});
-                const levelsResult = await waitForCommandResult(levelsJob.id);
+                const levelsResult = await executeRevitToolForUser(userId, "get_levels_list", {});
                 if (!levelsResult.success) {
                   throw new Error(`Level query failed: ${levelsResult.error}`);
                 }
@@ -1138,8 +1187,7 @@ export async function POST(req: NextRequest) {
                 );
                 emitContentChunk(controller, encoder, "Now creating walls in your Revit model in realtime...\n\n");
 
-                const wallsJob = await enqueueCommandForUser(userId, "create_wall", wallsPayload);
-                const wallsResult = await waitForCommandResult(wallsJob.id);
+                const wallsResult = await executeRevitToolForUser(userId, "create_wall", wallsPayload);
                 if (!wallsResult.success) {
                   throw new Error(`Wall creation failed: ${wallsResult.error}`);
                 }
@@ -1175,13 +1223,13 @@ export async function POST(req: NextRequest) {
                 const blockedPlan: AgentTodoStep[] = [
                   {
                     id: "step-1",
-                    title: "Connect Datum Revit Agent",
+                    title: "Connect Cloud Relay / Revit Plugin",
                     status: "blocked",
-                    reason: "Revit Agent is disconnected",
+                    reason: "No active execution transport",
                   },
                 ];
                 finalResponse =
-                  "Revit Agent is disconnected. I cannot continue the agent workflow until plugin + local agent are connected.";
+                  "No active execution transport found. I cannot continue until Cloud Relay (or legacy local agent) is connected to your Revit plugin.";
                 emitAgentProgress(
                   controller,
                   encoder,
@@ -1198,7 +1246,7 @@ export async function POST(req: NextRequest) {
                   toAgentEvent({
                     kind: "analysis",
                     stage: "error",
-                    message: "Realtime workflow blocked: Revit Agent disconnected",
+                    message: "Realtime workflow blocked: no active execution transport",
                     toolName: "analyze_layout_design",
                   })
                 );
@@ -1253,12 +1301,13 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      const job = await enqueueCommandForUser(userId, toolName, parsedArgs);
-      const result = await waitForCommandResult(job.id);
-      const toolError = result.success ? getToolExecutionError(result.result) : null;
-      const resultText = result.success && !toolError
-        ? `Tool ${toolName} executed successfully:\n${JSON.stringify(result.result, null, 2)}`
-        : `Tool ${toolName} failed: ${toolError || result.error}`;
+      const result = await executeRevitToolForUser(userId, toolName, parsedArgs, {
+        preferMcp: true,
+        allowLegacyFallback: true,
+      });
+      const resultText = result.success
+        ? `Tool ${toolName} executed successfully via ${result.transport.toUpperCase()}:\n${JSON.stringify(result.result, null, 2)}`
+        : `Tool ${toolName} failed via ${result.transport.toUpperCase()}: ${result.error}`;
 
       await prisma.chatMessage.create({
         data: {
@@ -1275,7 +1324,7 @@ export async function POST(req: NextRequest) {
       where: { clerkUserId: userId },
       orderBy: { lastSeenAt: "desc" },
     });
-    const revitConnected =
+    const legacyRevitConnected =
       !!recentAgentSession &&
       Date.now() - new Date(recentAgentSession.lastSeenAt).getTime() <= 30_000;
 
@@ -1286,6 +1335,7 @@ export async function POST(req: NextRequest) {
     let mcpTools: Array<{ name: string; description: string }> = [];
     let mcpToolCount = 0;
     let mcpReason = "";
+    let revitConnected = legacyRevitConnected;
     if (enableMCP) {
       try {
         const mcpClient = getMCPClient();
@@ -1307,24 +1357,26 @@ export async function POST(req: NextRequest) {
         if (mcpCatalogAvailable) {
           const toolNamesCsv = mcpTools.map((t) => t.name).join(", ");
           const toolsList = mcpTools.map((t) => `- ${t.name}: ${t.description}`).join("\n");
-          mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=${mcpConnected ? "CONNECTED" : "DISCONNECTED"}\nMCP_CATALOG_STATUS=AVAILABLE\nMCP_TOOL_COUNT=${mcpToolCount}\nREVIT_AGENT_STATUS=${revitConnected ? "CONNECTED" : "DISCONNECTED"}\n\nYou have access to ${mcpToolCount} Revit MCP tools for BIM automation and architectural design:\n\n${toolsList}\n\nWhen users ask for Revit-related tasks:
-- If REVIT_AGENT_STATUS=CONNECTED, you can state that execution from Copilot is available.
-- If REVIT_AGENT_STATUS=DISCONNECTED, instruct user to connect Datum Revit Agent and keep Revit open.
-Do not claim MCP is disconnected when MCP_CONNECTION_STATUS=CONNECTED.
-      Use exact tool names from this catalog when suggesting or choosing commands:
-      MCP_TOOL_NAMES=${toolNamesCsv}
-For executable Revit tasks, prefer giving one concrete next command in this format:
+          mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=${mcpConnected ? "CONNECTED" : "DISCONNECTED"}\nMCP_CATALOG_STATUS=AVAILABLE\nMCP_TOOL_COUNT=${mcpToolCount}\nLEGACY_AGENT_HEARTBEAT=${legacyRevitConnected ? "CONNECTED" : "DISCONNECTED"}\nREVIT_EXECUTION_STATUS=${(mcpConnected || legacyRevitConnected) ? "CONNECTED" : "DISCONNECTED"}\nEXECUTION_TRANSPORT=PRIMARY_MCP_RELAY_WITH_LEGACY_JOB_FALLBACK\n\nYou have access to ${mcpToolCount} Revit MCP tools for BIM automation:\n\n${toolsList}\n\nExecution architecture (authoritative): Browser LLM -> Datum API -> MCP on Railway + Cloud Relay -> Revit plugin -> Revit model.
+- Treat MCP_CONNECTION_STATUS=CONNECTED as live execution available, even if LEGACY_AGENT_HEARTBEAT=DISCONNECTED.
+- Use exact tool names from this catalog only.
+- For executable tasks, execute tools directly; do not ask user to reconnect local-only agent when MCP relay is connected.
+- If execution fails, report exact failing tool and transport (MCP or fallback).
+MCP_TOOL_NAMES=${toolNamesCsv}
+For manual execution format:
 /run <tool_name> <json_args>
 Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
         } else {
-          mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=${mcpConnected ? "CONNECTED" : "DISCONNECTED"}\nMCP_CATALOG_STATUS=UNAVAILABLE\nMCP_TOOL_COUNT=0\nREVIT_AGENT_STATUS=${revitConnected ? "CONNECTED" : "DISCONNECTED"}\nNote: MCP tool catalog is currently unavailable, but direct /run execution may still work via connected Revit Agent.`;
+          mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=${mcpConnected ? "CONNECTED" : "DISCONNECTED"}\nMCP_CATALOG_STATUS=UNAVAILABLE\nMCP_TOOL_COUNT=0\nLEGACY_AGENT_HEARTBEAT=${legacyRevitConnected ? "CONNECTED" : "DISCONNECTED"}\nREVIT_EXECUTION_STATUS=${(mcpConnected || legacyRevitConnected) ? "CONNECTED" : "DISCONNECTED"}\nEXECUTION_TRANSPORT=PRIMARY_MCP_RELAY_WITH_LEGACY_JOB_FALLBACK\nNote: MCP tool catalog is currently unavailable.`;
         }
       } catch (error) {
         console.error("Failed to load MCP tools:", error);
         mcpReason = error instanceof Error ? error.message : "Unknown MCP error";
-        mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=DISCONNECTED\nMCP_CATALOG_STATUS=UNAVAILABLE\nMCP_TOOL_COUNT=0\nREVIT_AGENT_STATUS=${revitConnected ? "CONNECTED" : "DISCONNECTED"}\nNote: MCP tools connection is currently unavailable.`;
+        mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=DISCONNECTED\nMCP_CATALOG_STATUS=UNAVAILABLE\nMCP_TOOL_COUNT=0\nLEGACY_AGENT_HEARTBEAT=${legacyRevitConnected ? "CONNECTED" : "DISCONNECTED"}\nREVIT_EXECUTION_STATUS=${legacyRevitConnected ? "CONNECTED" : "DISCONNECTED"}\nEXECUTION_TRANSPORT=PRIMARY_MCP_RELAY_WITH_LEGACY_JOB_FALLBACK\nNote: MCP tools connection is currently unavailable.`;
       }
     }
+
+    revitConnected = mcpConnected || legacyRevitConnected;
 
     if (isStatusIntent(userText)) {
       const mcpServerText = mcpConnected ? "Connected" : "Disconnected";
@@ -1334,7 +1386,7 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
       const deviceSuffix = recentAgentSession?.deviceName ? ` (${recentAgentSession.deviceName})` : "";
       const mcpReasonLine = mcpReason ? `\n- MCP Reason: ${mcpReason}` : "";
 
-      const statusText = `Connection Status\n- MCP Server: ${mcpServerText}\n- MCP Catalog: ${mcpCatalogText}\n- Revit Agent: ${revitAgentText}${deviceSuffix}\n- Direct /run Execution: ${directRunText}${mcpReasonLine}\n\nTo execute a tool now, use:\n/run <tool_name> <json_args>\nExample: /run get_levels_list {}`;
+      const statusText = `Connection Status\n- MCP Server: ${mcpServerText}\n- MCP Catalog: ${mcpCatalogText}\n- Cloud Relay + Plugin: ${mcpConnected ? "Connected" : "Unknown"}\n- Legacy Local Heartbeat: ${legacyRevitConnected ? "Connected" : "Disconnected"}${deviceSuffix}\n- Direct /run Execution: ${directRunText}${mcpReasonLine}\n\nTo execute a tool now, use:\n/run <tool_name> <json_args>\nExample: /run get_levels_list {}`;
 
       await prisma.chatMessage.create({
         data: {
@@ -1360,7 +1412,7 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
 
     if (!revitConnected && isRevitExecutionBuildIntent(userText)) {
       const disconnectedExecutionText =
-        "I can execute this in Revit, but Datum Revit Agent is currently disconnected. Reconnect the agent and keep Revit open, then retry the same request for realtime implementation.";
+        "I can execute this in Revit, but no active execution transport is available right now. Reconnect Cloud Relay (or legacy local agent), keep Revit open, then retry.";
 
       await prisma.chatMessage.create({
         data: {
@@ -1478,18 +1530,17 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                   "Analyzing your current plan and preparing the 2BHK layout strategy...\n\n"
                 );
 
-                const analysisJob = await enqueueCommandForUser(userId, "analyze_layout_design", {
+                const analysisResult = await executeRevitToolForUser(userId, "analyze_layout_design", {
                   includeStructural: true,
                   includeArchitectural: true,
                   includeMEP: false,
                   includeAnnotations: false,
                   checkCodeCompliance: true,
                 });
-                const analysisResult = await waitForCommandResult(analysisJob.id);
                 const analysisToolError = analysisResult.success ? getToolExecutionError(analysisResult.result) : null;
 
                 if (!analysisResult.success || analysisToolError) {
-                  throw new Error(`Plan analysis failed: ${analysisToolError || analysisResult.error}`);
+                  throw new Error(`Plan analysis failed: ${analysisToolError || (analysisResult.success ? "Unknown error" : analysisResult.error)}`);
                 }
                 toolOutcomes.push({ toolName: "analyze_layout_design", status: "success" });
 
@@ -1537,11 +1588,10 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                 "Plan analysis complete. Selecting level and starting wall creation in realtime...\n\n"
               );
 
-              const levelsJob = await enqueueCommandForUser(userId, "get_levels_list", {});
-              const levelsResult = await waitForCommandResult(levelsJob.id);
+              const levelsResult = await executeRevitToolForUser(userId, "get_levels_list", {});
               const levelsToolError = levelsResult.success ? getToolExecutionError(levelsResult.result) : null;
               if (!levelsResult.success || levelsToolError) {
-                throw new Error(`Failed to fetch levels: ${levelsToolError || levelsResult.error}`);
+                throw new Error(`Failed to fetch levels: ${levelsToolError || (levelsResult.success ? "Unknown error" : levelsResult.error)}`);
               }
               toolOutcomes.push({ toolName: "get_levels_list", status: "success" });
               todoPlan = updateTodoPlanStep(todoPlan, "step-2", { status: "completed" });
@@ -1588,12 +1638,11 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                 "Now creating the 2BHK walls in your model. You should see updates in Revit as this step completes...\n\n"
               );
 
-              const wallsJob = await enqueueCommandForUser(userId, "create_wall", wallPayload);
-              const wallsResult = await waitForCommandResult(wallsJob.id);
+              const wallsResult = await executeRevitToolForUser(userId, "create_wall", wallPayload);
               const wallsToolError = wallsResult.success ? getToolExecutionError(wallsResult.result) : null;
 
               if (!wallsResult.success || wallsToolError) {
-                throw new Error(`Wall creation failed: ${wallsToolError || wallsResult.error}`);
+                throw new Error(`Wall creation failed: ${wallsToolError || (wallsResult.success ? "Unknown error" : wallsResult.error)}`);
               }
               toolOutcomes.push({ toolName: "create_wall", status: "success" });
               todoPlan = updateTodoPlanStep(todoPlan, "step-3", { status: "completed" });
@@ -1645,8 +1694,7 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                   })
                 );
 
-                const floorJob = await enqueueCommandForUser(userId, "create_floor", floorPayload);
-                const floorResult = await waitForCommandResult(floorJob.id);
+                const floorResult = await executeRevitToolForUser(userId, "create_floor", floorPayload);
                 const floorToolError = floorResult.success ? getToolExecutionError(floorResult.result) : null;
                 if (floorResult.success && !floorToolError) {
                   toolOutcomes.push({ toolName: "create_floor", status: "success" });
@@ -1682,24 +1730,24 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                       message: "Step 4/6 failed",
                       plan: cloneTodoPlan(updateTodoPlanStep(todoPlan, "step-4", {
                         status: "failed",
-                        reason: String(floorToolError || floorResult.error || "Unknown error"),
+                        reason: String(floorToolError || (floorResult.success ? "Unknown error" : floorResult.error) || "Unknown error"),
                       })),
                     })
                   );
                   todoPlan = updateTodoPlanStep(todoPlan, "step-4", {
                     status: "failed",
-                    reason: String(floorToolError || floorResult.error || "Unknown error"),
+                    reason: String(floorToolError || (floorResult.success ? "Unknown error" : floorResult.error) || "Unknown error"),
                   });
-                  toolOutcomes.push({ toolName: "create_floor", status: "failed", reason: String(floorToolError || floorResult.error || "Unknown error") });
+                  toolOutcomes.push({ toolName: "create_floor", status: "failed", reason: String(floorToolError || (floorResult.success ? "Unknown error" : floorResult.error) || "Unknown error") });
                   emitAgentProgress(
                     controller,
                     encoder,
                     toAgentEvent({
                       kind: "tool",
                       stage: "error",
-                      message: `Floor creation skipped: ${floorToolError || floorResult.error}`,
+                      message: `Floor creation skipped: ${floorToolError || (floorResult.success ? "Unknown error" : floorResult.error)}`,
                       toolName: "create_floor",
-                      details: summarizeForDetails({ error: floorToolError || floorResult.error }),
+                      details: summarizeForDetails({ error: floorToolError || (floorResult.success ? "Unknown error" : floorResult.error) }),
                     })
                   );
                 }
@@ -1732,8 +1780,7 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                   })
                 );
 
-                const roomJob = await enqueueCommandForUser(userId, "create_room", roomPayload);
-                const roomResult = await waitForCommandResult(roomJob.id);
+                const roomResult = await executeRevitToolForUser(userId, "create_room", roomPayload);
                 const roomToolError = roomResult.success ? getToolExecutionError(roomResult.result) : null;
                 if (roomResult.success && !roomToolError) {
                   toolOutcomes.push({ toolName: "create_room", status: "success" });
@@ -1769,24 +1816,24 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                       message: "Step 5/6 failed",
                       plan: cloneTodoPlan(updateTodoPlanStep(todoPlan, "step-5", {
                         status: "failed",
-                        reason: String(roomToolError || roomResult.error || "Unknown error"),
+                        reason: String(roomToolError || (roomResult.success ? "Unknown error" : roomResult.error) || "Unknown error"),
                       })),
                     })
                   );
                   todoPlan = updateTodoPlanStep(todoPlan, "step-5", {
                     status: "failed",
-                    reason: String(roomToolError || roomResult.error || "Unknown error"),
+                    reason: String(roomToolError || (roomResult.success ? "Unknown error" : roomResult.error) || "Unknown error"),
                   });
-                  toolOutcomes.push({ toolName: "create_room", status: "failed", reason: String(roomToolError || roomResult.error || "Unknown error") });
+                  toolOutcomes.push({ toolName: "create_room", status: "failed", reason: String(roomToolError || (roomResult.success ? "Unknown error" : roomResult.error) || "Unknown error") });
                   emitAgentProgress(
                     controller,
                     encoder,
                     toAgentEvent({
                       kind: "tool",
                       stage: "error",
-                      message: `Room creation skipped: ${roomToolError || roomResult.error}`,
+                      message: `Room creation skipped: ${roomToolError || (roomResult.success ? "Unknown error" : roomResult.error)}`,
                       toolName: "create_room",
-                      details: summarizeForDetails({ error: roomToolError || roomResult.error }),
+                      details: summarizeForDetails({ error: roomToolError || (roomResult.success ? "Unknown error" : roomResult.error) }),
                     })
                   );
                 }
@@ -1806,19 +1853,18 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                     plan: cloneTodoPlan(todoPlan),
                   })
                 );
-                const postAnalysisJob = await enqueueCommandForUser(userId, "analyze_layout_design", {
+                const postAnalysisResult = await executeRevitToolForUser(userId, "analyze_layout_design", {
                   includeStructural: true,
                   includeArchitectural: true,
                   includeMEP: false,
                   includeAnnotations: false,
                   checkCodeCompliance: false,
                 });
-                const postAnalysisResult = await waitForCommandResult(postAnalysisJob.id);
                 const postAnalysisError = postAnalysisResult.success
                   ? getToolExecutionError(postAnalysisResult.result)
                   : postAnalysisResult.error;
 
-                if (!postAnalysisError) {
+                if (postAnalysisResult.success && !postAnalysisError) {
                   afterCounts = getAnalysisCounts(postAnalysisResult.result);
                   toolOutcomes.push({ toolName: "analyze_layout_design (post-check)", status: "success" });
                   todoPlan = updateTodoPlanStep(todoPlan, "step-6", { status: "completed" });
@@ -1862,19 +1908,19 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
               emitContentChunk(controller, encoder, finalResponse);
             } else {
               finalResponse =
-                "Revit Agent is disconnected, so I cannot build in realtime yet. Reconnect the agent and retry this same request.";
+                "No active execution transport found, so I cannot build in realtime yet. Reconnect Cloud Relay (or legacy local agent) and retry this same request.";
               emitAgentProgress(
                 controller,
                 encoder,
                 toAgentEvent({
                   kind: "plan",
                   stage: "error",
-                  message: "Execution blocked: Revit Agent disconnected",
-                  details: "Realtime creation requires active local agent and open Revit session.",
+                  message: "Execution blocked: no active execution transport",
+                  details: "Realtime creation requires active Cloud Relay or legacy local agent with open Revit session.",
                   plan: [
                     {
                       id: "step-1",
-                      title: "Reconnect Datum Revit Agent",
+                      title: "Reconnect Cloud Relay / Revit Plugin",
                       status: "blocked",
                       reason: "No active Revit agent heartbeat",
                     },
@@ -1989,15 +2035,14 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                 })
               );
 
-              const job = await enqueueCommandForUser(userId, autoToolCall.toolName, autoToolCall.args);
-              const result = await waitForCommandResult(job.id);
+              const result = await executeRevitToolForUser(userId, autoToolCall.toolName, autoToolCall.args);
               const toolError = result.success ? getToolExecutionError(result.result) : null;
 
               if (result.success && !toolError) {
                 todoPlan = updateTodoPlanStep(todoPlan, "step-1", {
                   status: "completed",
                 });
-                finalResponse = `Executed ${autoToolCall.toolName} successfully in Revit.\n\nResult:\n${JSON.stringify(result.result, null, 2)}`;
+                finalResponse = `Executed ${autoToolCall.toolName} successfully in Revit via ${result.transport.toUpperCase()}.\n\nResult:\n${JSON.stringify(result.result, null, 2)}`;
                 emitAgentProgress(
                   controller,
                   encoder,
@@ -2022,9 +2067,9 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
               } else {
                 todoPlan = updateTodoPlanStep(todoPlan, "step-1", {
                   status: "failed",
-                  reason: String(toolError || result.error || "Unknown error"),
+                  reason: String(toolError || (result.success ? "Unknown error" : result.error) || "Unknown error"),
                 });
-                finalResponse = `Execution failed for ${autoToolCall.toolName}: ${toolError || result.error}`;
+                finalResponse = `Execution failed for ${autoToolCall.toolName} via ${result.transport.toUpperCase()}: ${toolError || (result.success ? "Unknown error" : result.error)}`;
                 emitAgentProgress(
                   controller,
                   encoder,
@@ -2041,9 +2086,9 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                   toAgentEvent({
                     kind: "tool",
                     stage: "error",
-                    message: String(toolError || result.error),
+                    message: String(toolError || (result.success ? "Unknown error" : result.error)),
                     toolName: autoToolCall.toolName,
-                    details: summarizeForDetails({ error: toolError || result.error }),
+                    details: summarizeForDetails({ error: toolError || (result.success ? "Unknown error" : result.error) }),
                   })
                 );
               }
@@ -2052,10 +2097,10 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
             } else {
               todoPlan = updateTodoPlanStep(todoPlan, "step-1", {
                 status: "blocked",
-                reason: "Revit Agent is disconnected",
+                reason: "No active execution transport",
               });
               finalResponse =
-                "I found an executable Revit action, but Revit Agent is disconnected. Connect Datum Revit Agent and keep Revit open, then retry.";
+                "I found an executable Revit action, but no active execution transport is connected. Connect Cloud Relay (or legacy local agent), keep Revit open, then retry.";
               emitAgentProgress(
                 controller,
                 encoder,
@@ -2072,9 +2117,9 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                 toAgentEvent({
                   kind: "analysis",
                   stage: "error",
-                  message: "Revit Agent is disconnected",
+                  message: "No active execution transport",
                   toolName: autoToolCall.toolName,
-                  details: "Execution is blocked until local Datum Revit Agent reconnects.",
+                  details: "Execution is blocked until Cloud Relay or legacy local agent reconnects.",
                 })
               );
               controller.enqueue(encoder.encode(createSseData({ content: finalResponse })));
@@ -2292,8 +2337,7 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                 }
               }
 
-              const job = await enqueueCommandForUser(userId, resolvedToolName, normalizedArgs);
-              const result = await waitForCommandResult(job.id);
+              const result = await executeRevitToolForUser(userId, resolvedToolName, normalizedArgs);
               const toolError = result.success ? getToolExecutionError(result.result) : null;
 
               if (result.success && !toolError) {
@@ -2310,7 +2354,7 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                   toAgentEvent({
                     kind: "tool",
                     stage: "completed",
-                    message: `${currentStep.toolName} completed successfully`,
+                    message: `${currentStep.toolName} completed successfully via ${result.transport.toUpperCase()}`,
                     toolName: currentStep.toolName,
                     details: summarizeForDetails(result.result, 500),
                   })
@@ -2384,7 +2428,7 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                 }
               } else {
                 // Step failed
-                const errorMessage = String(toolError || result.error || "Unknown error");
+                const errorMessage = String(toolError || (result.success ? "Unknown error" : result.error) || "Unknown error");
                 toolOutcomes.push({ toolName: currentStep.toolName, status: "failed", reason: errorMessage });
 
                 todoPlan = todoPlan.map((s) =>
@@ -2397,7 +2441,7 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
                   toAgentEvent({
                     kind: "tool",
                     stage: "error",
-                    message: `${currentStep.toolName} failed: ${errorMessage}`,
+                    message: `${currentStep.toolName} failed via ${result.transport.toUpperCase()}: ${errorMessage}`,
                     toolName: currentStep.toolName,
                     details: summarizeForDetails({ error: errorMessage }),
                   })

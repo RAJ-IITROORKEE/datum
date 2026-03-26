@@ -42,6 +42,7 @@ type RelayStatusResponse = {
 };
 
 export function RevitConnectionMenu() {
+  const showLegacyLocalPairing = false;
   const [status, setStatus] = useState<RevitStatusResponse | null>(null);
   const [pairCode, setPairCode] = useState<string | null>(null);
   const [pairCodeExpiresAt, setPairCodeExpiresAt] = useState<string | null>(null);
@@ -217,6 +218,10 @@ export function RevitConnectionMenu() {
     setTimeout(() => setRelayCopied(false), 1500);
   };
 
+  const keepMenuOpen = (event: Event) => {
+    event.preventDefault();
+  };
+
   const disconnectRevitAgent = async () => {
     if (!status?.activeSession?.id) return;
     setDisconnecting(true);
@@ -253,8 +258,14 @@ export function RevitConnectionMenu() {
     return relayTimeLeft === "Expired";
   }, [relayTimeLeft]);
 
-  // Determine badge state
+  // Determine badge state (Cloud Relay first, local legacy fallback)
   const getBadgeContent = () => {
+    if (relayStatus?.revitConnected) {
+      return { variant: "default" as const, text: "Plugin connected" };
+    }
+    if (relayToken && !isRelayTokenExpired) {
+      return { variant: "secondary" as const, text: "Waiting pairing" };
+    }
     if (sessionExpired) {
       return { variant: "destructive" as const, text: "Session Expired" };
     }
@@ -283,9 +294,11 @@ export function RevitConnectionMenu() {
         </Button>
       </DropdownMenuTrigger>
 
-      <DropdownMenuContent align="end" className="w-72">
-        <DropdownMenuLabel className="flex items-center justify-between">
-          Revit Agent
+        <DropdownMenuContent align="end" className="w-80">
+          {showLegacyLocalPairing ? (
+          <>
+          <DropdownMenuLabel className="flex items-center justify-between">
+            Revit Agent
           {sessionExpired && (
             <Badge variant="destructive" className="text-[10px]">
               Session Expired
@@ -325,7 +338,7 @@ export function RevitConnectionMenu() {
             Download Windows agent (.exe)
           </a>
         </DropdownMenuItem>
-        <DropdownMenuSeparator />
+        {showLegacyLocalPairing ? <DropdownMenuSeparator /> : null}
         <div className="px-2 py-1.5 text-xs text-muted-foreground">
           {status?.connected
             ? `Connected to ${status.activeSession?.deviceName || "device"}`
@@ -383,10 +396,12 @@ export function RevitConnectionMenu() {
             </div>
           </>
         ) : null}
+          </>
+          ) : null}
 
         <DropdownMenuSeparator />
         <DropdownMenuLabel>Cloud Relay (Revit Plugin)</DropdownMenuLabel>
-        <DropdownMenuItem onClick={generateRelayToken} disabled={relayLoading}>
+        <DropdownMenuItem onSelect={keepMenuOpen} onClick={generateRelayToken} disabled={relayLoading}>
           <Link2 className="h-4 w-4" />
           {relayLoading ? "Generating..." : "Generate relay token"}
         </DropdownMenuItem>
@@ -396,7 +411,7 @@ export function RevitConnectionMenu() {
 
         {relayToken ? (
           <>
-            <DropdownMenuItem onClick={copyRelayInfo} disabled={isRelayTokenExpired}>
+            <DropdownMenuItem onSelect={keepMenuOpen} onClick={copyRelayInfo} disabled={isRelayTokenExpired}>
               {relayCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
               {relayCopied ? "Relay info copied" : isRelayTokenExpired ? "Token expired" : "Copy URL + token"}
             </DropdownMenuItem>
