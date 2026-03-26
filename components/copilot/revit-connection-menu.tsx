@@ -28,6 +28,19 @@ type RevitStatusResponse = {
   } | null;
 };
 
+type RelayTokenResponse = {
+  token: string;
+  expiresAt: string;
+  relayUrl: string;
+};
+
+type RelayStatusResponse = {
+  valid: boolean;
+  revitConnected?: boolean;
+  mcpConnected?: boolean;
+  error?: string;
+};
+
 export function RevitConnectionMenu() {
   const [status, setStatus] = useState<RevitStatusResponse | null>(null);
   const [pairCode, setPairCode] = useState<string | null>(null);
@@ -37,6 +50,12 @@ export function RevitConnectionMenu() {
   const [disconnecting, setDisconnecting] = useState(false);
   const [sessionExpired, setSessionExpired] = useState(false);
   const [sessionTimeLeft, setSessionTimeLeft] = useState<string | null>(null);
+  const [relayToken, setRelayToken] = useState<string | null>(null);
+  const [relayUrl, setRelayUrl] = useState<string | null>(null);
+  const [relayExpiresAt, setRelayExpiresAt] = useState<string | null>(null);
+  const [relayStatus, setRelayStatus] = useState<RelayStatusResponse | null>(null);
+  const [relayLoading, setRelayLoading] = useState(false);
+  const [relayCopied, setRelayCopied] = useState(false);
   const downloadUrl = "/api/revit/agent/download";
 
   const refreshStatus = async () => {
@@ -95,6 +114,25 @@ export function RevitConnectionMenu() {
   }, []);
 
   useEffect(() => {
+    if (!relayToken) return;
+
+    const refreshRelayStatus = async () => {
+      try {
+        const response = await fetch(`/api/revit/relay/status?token=${relayToken}`, { cache: "no-store" });
+        if (!response.ok) return;
+        const data = (await response.json()) as RelayStatusResponse;
+        setRelayStatus(data);
+      } catch {
+        // ignore transient polling errors
+      }
+    };
+
+    refreshRelayStatus();
+    const timer = setInterval(refreshRelayStatus, 3000);
+    return () => clearInterval(timer);
+  }, [relayToken]);
+
+  useEffect(() => {
     updateTimeLeft();
     const timer = setInterval(updateTimeLeft, 1000);
     return () => clearInterval(timer);
@@ -120,6 +158,30 @@ export function RevitConnectionMenu() {
     await navigator.clipboard.writeText(pairCode);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
+  };
+
+  const generateRelayToken = async () => {
+    setRelayLoading(true);
+    try {
+      const response = await fetch("/api/revit/relay/token", { method: "POST" });
+      if (!response.ok) return;
+      const data = (await response.json()) as RelayTokenResponse;
+      setRelayToken(data.token);
+      setRelayUrl(data.relayUrl);
+      setRelayExpiresAt(data.expiresAt);
+      setRelayStatus(null);
+      setRelayCopied(false);
+    } finally {
+      setRelayLoading(false);
+    }
+  };
+
+  const copyRelayInfo = async () => {
+    if (!relayToken || !relayUrl) return;
+    const text = `Relay URL: ${relayUrl}\nPairing Token: ${relayToken}`;
+    await navigator.clipboard.writeText(text);
+    setRelayCopied(true);
+    setTimeout(() => setRelayCopied(false), 1500);
   };
 
   const disconnectRevitAgent = async () => {
@@ -153,6 +215,14 @@ export function RevitConnectionMenu() {
     if (!pairCodeExpiresAt) return false;
     return new Date(pairCodeExpiresAt) <= new Date();
   }, [pairCodeExpiresAt]);
+
+  const relayExpiryText = useMemo(() => {
+    if (!relayExpiresAt) return null;
+    const expiresAt = new Date(relayExpiresAt);
+    const now = new Date();
+    if (expiresAt <= now) return "Expired";
+    return expiresAt.toLocaleTimeString();
+  }, [relayExpiresAt]);
 
   // Determine badge state
   const getBadgeContent = () => {
@@ -281,6 +351,47 @@ export function RevitConnectionMenu() {
                   {isPairCodeExpired ? "Code expired - generate a new one" : `Expires at ${pairCodeExpiryText}`}
                 </div>
               ) : null}
+            </div>
+          </>
+        ) : null}
+
+        <DropdownMenuSeparator />
+        <DropdownMenuLabel>Cloud Relay (Revit Plugin)</DropdownMenuLabel>
+        <DropdownMenuItem onClick={generateRelayToken} disabled={relayLoading}>
+          <Link2 className="h-4 w-4" />
+          {relayLoading ? "Generating..." : "Generate relay token"}
+        </DropdownMenuItem>
+        <div className="px-2 pb-1.5 text-[11px] text-muted-foreground">
+          Use in Revit plugin: Settings {'>'} Cloud Relay
+        </div>
+
+        {relayToken ? (
+          <>
+            <DropdownMenuItem onClick={copyRelayInfo}>
+              {relayCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+              {relayCopied ? "Relay info copied" : "Copy URL + token"}
+            </DropdownMenuItem>
+            <div className="px-2 py-1.5">
+              <div className="mb-1 text-[11px] text-muted-foreground">Relay URL</div>
+              <div className="rounded-md border px-2 py-1 text-[11px] break-all">
+                {relayUrl}
+              </div>
+            </div>
+            <div className="px-2 py-1.5">
+              <div className="mb-1 text-[11px] text-muted-foreground">Pairing token</div>
+              <div className="rounded-md border px-2 py-1 text-sm font-semibold tracking-wider">
+                {relayToken}
+              </div>
+              {relayExpiryText ? (
+                <div className="mt-1 text-[11px] text-muted-foreground">
+                  {relayExpiryText === "Expired" ? "Token expired - generate a new one" : `Expires at ${relayExpiryText}`}
+                </div>
+              ) : null}
+            </div>
+            <div className="px-2 pb-2 text-[11px]">
+              <span className={relayStatus?.revitConnected ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"}>
+                {relayStatus?.revitConnected ? "Plugin connected" : "Waiting for plugin connection..."}
+              </span>
             </div>
           </>
         ) : null}
