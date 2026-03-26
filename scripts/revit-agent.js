@@ -91,7 +91,8 @@ function parsePortList(value) {
 const args = parseArgs(process.argv.slice(2));
 const config = loadConfig();
 
-const DATUM_URL = args.url || process.env.DATUM_URL || config.datumUrl || "http://localhost:3000";
+// Default to production URL for packaged builds, use IPv4 127.0.0.1 for local dev to avoid IPv6 issues
+const DATUM_URL = args.url || process.env.DATUM_URL || config.datumUrl || "https://datumcopilot.vercel.app";
 const POLL_MS = Number(args.pollMs || process.env.AGENT_POLL_MS || config.pollMs || 1200);
 const HEARTBEAT_MS = Number(args.heartbeatMs || process.env.AGENT_HEARTBEAT_MS || config.heartbeatMs || 5000);
 const REVIT_HOST = args.revitHost || process.env.REVIT_HOST || config.revitHost || "127.0.0.1";
