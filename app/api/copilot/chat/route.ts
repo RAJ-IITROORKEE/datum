@@ -2050,6 +2050,15 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
     // For complex multi-step tasks, use the LLM to plan and execute dynamically
     // ========================================================================
     const shouldUseAgenticMode = revitConnected && mcpCatalogAvailable && requiresAgenticMode(userText);
+    
+    // Debug logging
+    console.log("[AGENTIC MODE CHECK]", {
+      userText,
+      revitConnected,
+      mcpCatalogAvailable,
+      requiresAgenticMode: requiresAgenticMode(userText),
+      shouldUseAgenticMode,
+    });
 
     if (shouldUseAgenticMode) {
       const encoder = new TextEncoder();
