@@ -56,6 +56,7 @@ export function RevitConnectionMenu() {
   const [relayStatus, setRelayStatus] = useState<RelayStatusResponse | null>(null);
   const [relayLoading, setRelayLoading] = useState(false);
   const [relayCopied, setRelayCopied] = useState(false);
+  const [relayTimeLeft, setRelayTimeLeft] = useState<string | null>(null);
   const downloadUrl = "/api/revit/agent/download";
 
   const refreshStatus = async () => {
@@ -138,6 +139,38 @@ export function RevitConnectionMenu() {
     return () => clearInterval(timer);
   }, [updateTimeLeft]);
 
+  // Update relay token time left
+  const updateRelayTimeLeft = useCallback(() => {
+    if (!relayExpiresAt) {
+      setRelayTimeLeft(null);
+      return;
+    }
+    
+    const expiresAt = new Date(relayExpiresAt).getTime();
+    const now = Date.now();
+    const diff = expiresAt - now;
+    
+    if (diff <= 0) {
+      setRelayTimeLeft("Expired");
+      return;
+    }
+    
+    const minutes = Math.floor(diff / 60000);
+    const seconds = Math.floor((diff % 60000) / 1000);
+    
+    if (minutes > 0) {
+      setRelayTimeLeft(`${minutes}m ${seconds}s`);
+    } else {
+      setRelayTimeLeft(`${seconds}s`);
+    }
+  }, [relayExpiresAt]);
+
+  useEffect(() => {
+    updateRelayTimeLeft();
+    const timer = setInterval(updateRelayTimeLeft, 1000);
+    return () => clearInterval(timer);
+  }, [updateRelayTimeLeft]);
+
   const generatePairCode = async () => {
     setLoading(true);
     try {
@@ -216,13 +249,9 @@ export function RevitConnectionMenu() {
     return new Date(pairCodeExpiresAt) <= new Date();
   }, [pairCodeExpiresAt]);
 
-  const relayExpiryText = useMemo(() => {
-    if (!relayExpiresAt) return null;
-    const expiresAt = new Date(relayExpiresAt);
-    const now = new Date();
-    if (expiresAt <= now) return "Expired";
-    return expiresAt.toLocaleTimeString();
-  }, [relayExpiresAt]);
+  const isRelayTokenExpired = useMemo(() => {
+    return relayTimeLeft === "Expired";
+  }, [relayTimeLeft]);
 
   // Determine badge state
   const getBadgeContent = () => {
@@ -367,9 +396,9 @@ export function RevitConnectionMenu() {
 
         {relayToken ? (
           <>
-            <DropdownMenuItem onClick={copyRelayInfo}>
+            <DropdownMenuItem onClick={copyRelayInfo} disabled={isRelayTokenExpired}>
               {relayCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-              {relayCopied ? "Relay info copied" : "Copy URL + token"}
+              {relayCopied ? "Relay info copied" : isRelayTokenExpired ? "Token expired" : "Copy URL + token"}
             </DropdownMenuItem>
             <div className="px-2 py-1.5">
               <div className="mb-1 text-[11px] text-muted-foreground">Relay URL</div>
@@ -379,12 +408,12 @@ export function RevitConnectionMenu() {
             </div>
             <div className="px-2 py-1.5">
               <div className="mb-1 text-[11px] text-muted-foreground">Pairing token</div>
-              <div className="rounded-md border px-2 py-1 text-sm font-semibold tracking-wider">
+              <div className={`rounded-md border px-2 py-1 text-sm font-semibold tracking-wider ${isRelayTokenExpired ? "border-destructive/50 bg-destructive/10 text-muted-foreground line-through" : ""}`}>
                 {relayToken}
               </div>
-              {relayExpiryText ? (
-                <div className="mt-1 text-[11px] text-muted-foreground">
-                  {relayExpiryText === "Expired" ? "Token expired - generate a new one" : `Expires at ${relayExpiryText}`}
+              {relayTimeLeft ? (
+                <div className={`mt-1 text-[11px] ${isRelayTokenExpired ? "text-destructive" : "text-muted-foreground"}`}>
+                  {isRelayTokenExpired ? "Token expired - generate a new one" : `Expires in ${relayTimeLeft}`}
                 </div>
               ) : null}
             </div>
