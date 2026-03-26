@@ -235,61 +235,65 @@ export function ChatInterface({
   return (
     <div className="flex h-full flex-col bg-background">
       {/* Header with model switcher */}
-      <div className="flex items-center justify-between gap-3 border-b bg-card px-3 py-3 sm:px-4 md:px-6">
-        <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+      <div className="flex items-center justify-between gap-2 border-b bg-card px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3 md:px-6">
+        <div className="flex min-w-0 items-center gap-1.5 sm:gap-2 md:gap-3">
           <Button
             variant="ghost"
             size="icon"
-            className="md:hidden"
+            className="h-8 w-8 shrink-0 md:hidden"
             onClick={onOpenSidebar}
             aria-label="Open chat history"
           >
             <PanelLeft className="h-5 w-5" />
           </Button>
-          <img src="/fav.png" alt="Datumm" className="h-8 w-auto rounded-full" />
-          <div className="leading-tight">
-            <h1 className="text-base font-semibold text-card-foreground sm:text-lg">Datumm Copilot</h1>
-            <p className="text-xs text-blue-600 dark:text-blue-400">AI Assistant</p>
+          <img src="/fav.png" alt="Datumm" className="h-7 w-auto rounded-full shrink-0 sm:h-8" />
+          <div className="min-w-0 leading-tight">
+            <h1 className="truncate text-sm font-semibold text-card-foreground sm:text-base md:text-lg">Datumm Copilot</h1>
+            <p className="text-[10px] text-blue-600 dark:text-blue-400 sm:text-xs">AI Assistant</p>
           </div>
-          <MCPToolsDialog />
+          <div className="hidden sm:block">
+            <MCPToolsDialog />
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <RevitConnectionMenu />
-          <div className="w-37.5 sm:w-50">
-          <ModelSwitcher value={model} onValueChange={setModel} />
+        <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+          <div className="hidden sm:block">
+            <RevitConnectionMenu />
+          </div>
+          <div className="w-32 sm:w-37.5 md:w-50">
+            <ModelSwitcher value={model} onValueChange={setModel} />
           </div>
         </div>
       </div>
 
       {/* Messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6">
         {messages.length === 0 ? (
-          <div className="flex h-full items-center justify-center">
+          <div className="flex h-full items-center justify-center p-4">
             <div className="text-center">
-              <h2 className="mb-2 text-2xl font-bold text-foreground">
+              <h2 className="mb-2 text-xl font-bold text-foreground sm:text-2xl">
                 How can I help you today?
               </h2>
-              <p className="text-muted-foreground">
+              <p className="text-sm text-muted-foreground sm:text-base">
                 Start a conversation with AI assistant
               </p>
             </div>
           </div>
         ) : (
-          <div className="mx-auto max-w-3xl space-y-4">
+          <div className="mx-auto max-w-3xl space-y-3 sm:space-y-4">
             {messages.map((message) => (
               <div
                 key={message.id}
                 className={cn(
-                  "rounded-2xl p-4",
+                  "rounded-2xl p-3 sm:p-4",
                   message.role === "user"
-                    ? "ml-auto max-w-[85%] bg-blue-600 text-white sm:max-w-[80%]"
+                    ? "ml-auto max-w-[90%] bg-blue-600 text-white sm:max-w-[85%] md:max-w-[80%]"
                     : "bg-card border border-blue-100 dark:border-blue-900/40"
                 )}
               >
-                <div className="flex gap-3">
+                <div className="flex gap-2 sm:gap-3">
                   <div
                     className={cn(
-                      "flex h-8 w-8 shrink-0 items-center justify-center rounded-full font-semibold",
+                      "flex h-7 w-7 sm:h-8 sm:w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold",
                       message.role === "user"
                         ? "bg-blue-700 text-white"
                         : "bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-200"
@@ -300,7 +304,7 @@ export function ChatInterface({
                   <div className="flex-1 space-y-2 overflow-hidden">
                     <p
                       className={cn(
-                        "wrap-break-word whitespace-pre-wrap",
+                        "wrap-break-word whitespace-pre-wrap text-sm sm:text-base",
                         message.role === "user" ? "text-white" : "text-foreground"
                       )}
                     >
@@ -311,22 +315,22 @@ export function ChatInterface({
               </div>
             ))}
             {isLoading && (
-              <div className="rounded-2xl border border-blue-100 bg-card p-4 shadow-sm dark:border-blue-900/40">
-                <div className="flex gap-3">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-200">
-                    <Bot className="h-4 w-4 animate-pulse" />
+              <div className="rounded-2xl border border-blue-100 bg-card p-3 shadow-sm dark:border-blue-900/40 sm:p-4">
+                <div className="flex gap-2 sm:gap-3">
+                  <div className="flex h-7 w-7 sm:h-8 sm:w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-200">
+                    <Bot className="h-3.5 w-3.5 sm:h-4 sm:w-4 animate-pulse" />
                   </div>
                   <div className="flex-1">
-                    <div className="space-y-3">
+                    <div className="space-y-2 sm:space-y-3">
                       <div>
-                        <p className="text-sm font-medium text-foreground">Agent is building your design</p>
-                        <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
+                        <p className="text-xs sm:text-sm font-medium text-foreground">Agent is building your design</p>
+                        <div className="mt-1 flex items-center gap-2 text-xs sm:text-sm text-muted-foreground">
                           <div className="flex items-center gap-1">
-                            <div className="h-2 w-2 animate-bounce rounded-full bg-blue-500 [animation-delay:-0.3s]"></div>
-                            <div className="h-2 w-2 animate-bounce rounded-full bg-blue-500 [animation-delay:-0.15s]"></div>
-                            <div className="h-2 w-2 animate-bounce rounded-full bg-blue-500"></div>
+                            <div className="h-1.5 w-1.5 sm:h-2 sm:w-2 animate-bounce rounded-full bg-blue-500 [animation-delay:-0.3s]"></div>
+                            <div className="h-1.5 w-1.5 sm:h-2 sm:w-2 animate-bounce rounded-full bg-blue-500 [animation-delay:-0.15s]"></div>
+                            <div className="h-1.5 w-1.5 sm:h-2 sm:w-2 animate-bounce rounded-full bg-blue-500"></div>
                           </div>
-                          <span>{getVisibleAgentStatus()}</span>
+                          <span className="truncate">{getVisibleAgentStatus()}</span>
                         </div>
                       </div>
 
@@ -400,10 +404,10 @@ export function ChatInterface({
       </div>
 
       {/* Input */}
-      <div className="mx-auto w-full max-w-3xl p-3 sm:p-4">
+      <div className="mx-auto w-full max-w-3xl p-2 sm:p-3 md:p-4">
         <form
           onSubmit={handleSubmit}
-          className="flex flex-col gap-2 rounded-2xl border border-blue-100 bg-card p-2 shadow-lg dark:border-blue-900/40"
+          className="flex flex-col gap-1.5 sm:gap-2 rounded-2xl border border-blue-100 bg-card p-1.5 sm:p-2 shadow-lg dark:border-blue-900/40"
         >
           <Textarea
             value={input}
@@ -415,30 +419,30 @@ export function ChatInterface({
               }
             }}
             placeholder="How can I help you today? (Tip: /run get_levels_list {})"
-            className="min-h-15 w-full resize-none border-0 bg-transparent text-foreground outline-none focus-visible:ring-0"
+            className="min-h-12 sm:min-h-15 w-full resize-none border-0 bg-transparent text-sm sm:text-base text-foreground outline-none focus-visible:ring-0"
             disabled={isLoading}
           />
           <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 sm:gap-2">
               <Button
                 type="button"
                 variant="outline"
                 size="icon"
-                className="h-8 w-8 rounded-lg"
+                className="h-7 w-7 sm:h-8 sm:w-8 rounded-lg"
               >
-                <Plus className="h-4 w-4" />
+                <Plus className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
               </Button>
-              <span className="text-sm text-muted-foreground">
+              <span className="text-xs sm:text-sm text-muted-foreground truncate max-w-[100px] sm:max-w-none">
                 {model.split("/")[1]}
               </span>
             </div>
             <Button
               type="submit"
               size="icon"
-              className="h-8 w-8 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+              className="h-7 w-7 sm:h-8 sm:w-8 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
               disabled={!input.trim() || isLoading}
             >
-              <ArrowUp className="h-4 w-4" />
+              <ArrowUp className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
             </Button>
           </div>
         </form>

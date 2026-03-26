@@ -109,17 +109,20 @@ model AdminSurvey {
 
 // Copilot Chat Models
 model ChatConversation {
-  id        String   @id @default(auto()) @map("_id") @db.ObjectId
-  userId    String
-  title     String   @default("New Chat")
-  model     String   @default("anthropic/claude-sonnet-4.5")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId     String
+  title      String   @default("New Chat")
+  model      String   @default("anthropic/claude-sonnet-4.5")
+  isArchived Boolean  @default(false)
+  tags       String[] @default([])
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
-  messages  ChatMessage[]
+  messages   ChatMessage[]
 
   @@map("chat_conversations")
   @@index([userId])
+  @@index([userId, isArchived])
 }
 
 model ChatMessage {

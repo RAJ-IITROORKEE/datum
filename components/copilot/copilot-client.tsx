@@ -27,8 +27,8 @@ export function CopilotClient() {
   };
 
   return (
-    <div className="flex h-dvh w-full overflow-hidden">
-      <div className="hidden border-r md:flex md:w-72 lg:w-80">
+    <div className="flex h-dvh w-full overflow-hidden bg-background">
+      <div className="hidden border-r md:flex md:w-72 lg:w-80 xl:w-[22rem]">
         <CopilotSidebar
           currentConversationId={currentConversationId}
           onNewChat={handleNewChat}
@@ -38,7 +38,7 @@ export function CopilotClient() {
       </div>
 
       <Sheet open={mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
-        <SheetContent side="left" className="w-[88%] max-w-sm p-0">
+        <SheetContent side="left" className="w-[85%] max-w-sm p-0 sm:w-[75%]">
           <CopilotSidebar
             currentConversationId={currentConversationId}
             onNewChat={handleNewChat}

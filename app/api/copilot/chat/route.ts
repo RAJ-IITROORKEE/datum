@@ -162,6 +162,35 @@ function is2BhkBuildIntent(input: string): boolean {
   );
 }
 
+function isSimpleTwoRoomHouseIntent(input: string): boolean {
+  const text = input.toLowerCase();
+  const hasBuildVerb = containsAny(text, ["create", "build", "make", "start", "design"]);
+  const hasHouseContext = containsAny(text, ["house", "home", "layout", "plan", "rooms"]);
+  const hasTwoRoomHint = containsAny(text, ["2 room", "2 rooms", "two room", "two rooms", "2 bedroom", "two bedroom"]);
+
+  return hasBuildVerb && hasHouseContext && hasTwoRoomHint;
+}
+
+function isRevitExecutionBuildIntent(input: string): boolean {
+  const text = input.toLowerCase();
+  const hasBuildVerb = containsAny(text, ["create", "build", "make", "start", "implement"]);
+  const hasBimObject = containsAny(text, [
+    "house",
+    "room",
+    "rooms",
+    "wall",
+    "walls",
+    "door",
+    "window",
+    "furniture",
+    "floor",
+    "roof",
+    "revit",
+  ]);
+
+  return hasBuildVerb && hasBimObject;
+}
+
 function isContinuationIntent(input: string): boolean {
   const text = input.toLowerCase().trim();
   return containsAny(text, ["ok", "continue", "go ahead", "proceed", "yes", "next"]);
@@ -268,6 +297,41 @@ function buildSimple2BhkFloor(levelId: number) {
       },
     ],
   };
+}
+
+async function generateChatTitle(userMessage: string): Promise<string> {
+  try {
+    const response = await openrouter.chat.send({
+      chatGenerationParams: {
+        model: "anthropic/claude-3-haiku",
+        messages: [
+          {
+            role: "system",
+            content: "Generate a short, concise title (max 6 words) for a chat conversation based on the user's first message. Only return the title, nothing else. Do not use quotes.",
+          },
+          {
+            role: "user",
+            content: userMessage,
+          },
+        ],
+        maxTokens: 50,
+        temperature: 0.3,
+      },
+    });
+
+    const title = response.choices?.[0]?.message?.content?.trim();
+    if (title && title.length > 0) {
+      // Limit to 50 characters
+      return title.length > 50 ? title.substring(0, 47) + "..." : title;
+    }
+    
+    // Fallback to first message substring
+    return userMessage.substring(0, 50);
+  } catch (error) {
+    console.error("Failed to generate title:", error);
+    // Fallback to first message substring
+    return userMessage.substring(0, 50);
+  }
 }
 
 function buildSimple2BhkRooms(levelId: number) {
@@ -471,9 +535,11 @@ export async function POST(req: NextRequest) {
         where: { id: conversationId },
       });
     } else {
-      // Create new conversation with the first user message as title
+      // Create new conversation with LLM-generated title based on first message
       const firstMessage = messages[0]?.content || "New Chat";
-      const title = firstMessage.substring(0, 50);
+      const title = await generateChatTitle(
+        typeof firstMessage === "string" ? firstMessage : JSON.stringify(firstMessage)
+      );
       
       conversation = await prisma.chatConversation.create({
         data: {
@@ -833,7 +899,26 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
     const availableToolNames = new Set(mcpTools.map((tool) => tool.name));
     const isToolAvailable = (name: string) => !mcpCatalogAvailable || availableToolNames.has(name);
     const continue2BhkWorkflow = has2BhkIntentInContext(messages) && isContinuationIntent(userText);
-    const canRun2BhkWorkflow = revitConnected && (is2BhkBuildIntent(userText) || continue2BhkWorkflow);
+    const isHouseWorkflowIntent =
+      is2BhkBuildIntent(userText) ||
+      isSimpleTwoRoomHouseIntent(userText) ||
+      continue2BhkWorkflow;
+    const canRun2BhkWorkflow = revitConnected && isHouseWorkflowIntent;
+
+    if (!revitConnected && isRevitExecutionBuildIntent(userText)) {
+      const disconnectedExecutionText =
+        "I can execute this in Revit, but Datum Revit Agent is currently disconnected. Reconnect the agent and keep Revit open, then retry the same request for realtime implementation.";
+
+      await prisma.chatMessage.create({
+        data: {
+          conversationId: conversation.id,
+          role: "assistant",
+          content: disconnectedExecutionText,
+        },
+      });
+
+      return buildImmediateSseResponse(disconnectedExecutionText, conversation.id);
+    }
 
     if (canRun2BhkWorkflow) {
       const encoder = new TextEncoder();
@@ -1275,7 +1360,8 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
     // Prepare messages with system context
     const systemMessage = `You are Datum AI Copilot, an intelligent assistant specialized in architecture, BIM, and Revit automation.${mcpSystemMessage}
 
-Provide helpful, accurate responses and guide users on how to use available tools when relevant.`;
+  Provide helpful, accurate responses and guide users on how to use available tools when relevant.
+  Never output pseudo tool markup like <tool_call> or <tool_response>.`;
 
     const messagesWithSystem = [
       { role: "system", content: systemMessage },
