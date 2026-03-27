@@ -7,6 +7,7 @@
 
 import { getMCPClient, MCPTool } from "@/lib/mcp/client";
 import { enqueueCommandForUser, waitForCommandResult } from "@/lib/revit-agent/jobs";
+import { prisma } from "@/lib/prisma";
 import { AgentTool, ToolExecutionResult, AgentConfig, DEFAULT_AGENT_CONFIG } from "./types";
 import { extractToolError } from "./parser";
 
@@ -161,6 +162,35 @@ function applyBaseLevelIdToWalls(
 }
 
 /**
+ * Get active relay token for a user
+ */
+export async function getRelayToken(userId: string): Promise<string | null> {
+  try {
+    const relayToken = await prisma.revitRelayToken.findUnique({
+      where: { clerkUserId: userId },
+    });
+
+    if (!relayToken) {
+      return null;
+    }
+
+    // Check if expired
+    if (new Date() > relayToken.expiresAt) {
+      // Delete expired token
+      await prisma.revitRelayToken.delete({
+        where: { id: relayToken.id },
+      });
+      return null;
+    }
+
+    return relayToken.token;
+  } catch (error) {
+    console.error("Failed to get relay token:", error);
+    return null;
+  }
+}
+
+/**
  * Execute a tool via MCP or legacy transport
  */
 export async function executeTool(
@@ -175,6 +205,9 @@ export async function executeTool(
   let lastError: string | undefined;
   let attempts = 0;
   
+  // Get relay token for MCP routing
+  const relayToken = await getRelayToken(userId);
+  
   while (attempts <= (opts.maxRetries || 0)) {
     attempts++;
     
@@ -182,7 +215,7 @@ export async function executeTool(
     if (opts.preferMcp) {
       try {
         const mcpClient = getMCPClient();
-        const mcpResult = await mcpClient.callTool(toolName, args);
+        const mcpResult = await mcpClient.callTool(toolName, args, relayToken || undefined);
         
         if (mcpResult.success) {
           // Check for tool-level errors in result

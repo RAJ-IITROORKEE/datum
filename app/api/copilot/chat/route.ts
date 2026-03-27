@@ -182,8 +182,21 @@ async function executeRevitToolForUser(
 
   if (preferMcp) {
     try {
+      // Get relay token for this user
+      let relayToken: string | null = null;
+      try {
+        const tokenRecord = await prisma.revitRelayToken.findUnique({
+          where: { clerkUserId },
+        });
+        if (tokenRecord && new Date() <= tokenRecord.expiresAt) {
+          relayToken = tokenRecord.token;
+        }
+      } catch (e) {
+        console.warn("Failed to fetch relay token:", e);
+      }
+
       const mcpClient = getMCPClient();
-      const mcpResult = await mcpClient.callTool(toolName, args);
+      const mcpResult = await mcpClient.callTool(toolName, args, relayToken || undefined);
       const toolError = mcpResult.success ? getToolExecutionError(mcpResult.result) : null;
 
       if (mcpResult.success && !toolError) {
