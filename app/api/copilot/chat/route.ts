@@ -5,6 +5,21 @@ import { prisma } from "@/lib/prisma";
 import { getMCPClient } from "@/lib/mcp/client";
 import { enqueueCommandForUser, waitForCommandResult } from "@/lib/revit-agent/jobs";
 
+// Import new agentic system (with aliases to avoid conflicts)
+import {
+  runAgentWithPlanning,
+  fetchAvailableTools,
+  createSseStream as createAgentSseStream,
+  createSseData as createAgentSseData,
+  SSE_HEADERS,
+  createLogger,
+  AgentProgressEvent as NewAgentProgressEvent,
+  AgentTool,
+} from "@/lib/agent";
+
+// Feature flag for new agentic system
+const USE_NEW_AGENT_SYSTEM = process.env.USE_NEW_AGENT_SYSTEM === "true";
+
 const openrouter = new OpenRouter({
   apiKey: process.env.OPENROUTER_API_KEY!,
 });
@@ -2177,9 +2192,88 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
       mcpCatalogAvailable,
       requiresAgenticMode: requiresAgenticMode(userText),
       shouldUseAgenticMode,
+      useNewAgentSystem: USE_NEW_AGENT_SYSTEM,
     });
 
     if (shouldUseAgenticMode) {
+      // ==================================================================
+      // NEW AGENTIC SYSTEM (Feature Flagged)
+      // ==================================================================
+      if (USE_NEW_AGENT_SYSTEM) {
+        const { stream: agentStream, controller: agentController } = createAgentSseStream();
+        const agentLogger = createLogger(process.env.NODE_ENV === "development");
+        
+        // Convert MCP tools to AgentTool format
+        const agentTools: AgentTool[] = mcpTools.map((t: { name: string; description: string; inputSchema?: { type?: string; properties?: Record<string, unknown>; required?: string[] } }) => ({
+          name: t.name,
+          description: t.description,
+          inputSchema: {
+            type: "object" as const,
+            properties: (t.inputSchema?.properties || {}) as Record<string, { type: string; description?: string }>,
+            required: t.inputSchema?.required,
+          },
+        }));
+        
+        // Build context from recent messages
+        const contextMessages = messages.slice(-5).map((m: { role: string; content: string }) => 
+          `${m.role}: ${typeof m.content === 'string' ? m.content.slice(0, 300) : JSON.stringify(m.content).slice(0, 300)}`
+        ).join("\n");
+        
+        // Run agent in background
+        (async () => {
+          try {
+            const result = await runAgentWithPlanning({
+              userId,
+              goal: userText,
+              tools: agentTools,
+              context: contextMessages,
+              config: {
+                debug: process.env.NODE_ENV === "development",
+                model: "anthropic/claude-sonnet-4",
+              },
+              logger: agentLogger,
+              onProgress: (event: NewAgentProgressEvent) => {
+                agentController.sendProgress(event);
+              },
+            });
+            
+            // Send final result
+            const finalContent = result.success
+              ? result.finalAnswer || "Task completed successfully."
+              : `Execution failed: ${result.error}`;
+            
+            agentController.sendContent(finalContent);
+            
+            // Save to database
+            await prisma.chatMessage.create({
+              data: {
+                conversationId: conversation.id,
+                role: "assistant",
+                content: finalContent,
+              },
+            });
+            
+            agentController.sendConversationId(conversation.id);
+            agentController.close();
+          } catch (error) {
+            const errorMsg = error instanceof Error ? error.message : "Unknown error";
+            agentController.error(errorMsg);
+            await prisma.chatMessage.create({
+              data: {
+                conversationId: conversation.id,
+                role: "assistant",
+                content: `Error: ${errorMsg}`,
+              },
+            });
+          }
+        })();
+        
+        return new Response(agentStream, { headers: SSE_HEADERS });
+      }
+      
+      // ==================================================================
+      // LEGACY AGENTIC SYSTEM (Original Implementation)
+      // ==================================================================
       const encoder = new TextEncoder();
       let finalResponse = "";
 
