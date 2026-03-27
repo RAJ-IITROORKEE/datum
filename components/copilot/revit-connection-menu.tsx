@@ -115,6 +115,26 @@ export function RevitConnectionMenu() {
     return () => clearInterval(statusTimer);
   }, []);
 
+  // Load persisted relay token on mount
+  useEffect(() => {
+    const loadPersistedToken = async () => {
+      try {
+        const response = await fetch("/api/revit/relay/token", { cache: "no-store" });
+        if (!response.ok) return;
+        const data = await response.json();
+        if (data.token) {
+          setRelayToken(data.token);
+          setRelayUrl(data.relayUrl);
+          setRelayExpiresAt(data.expiresAt);
+        }
+      } catch (error) {
+        console.error("Failed to load persisted relay token:", error);
+      }
+    };
+    
+    loadPersistedToken();
+  }, []);
+
   useEffect(() => {
     if (!relayToken) return;
 
