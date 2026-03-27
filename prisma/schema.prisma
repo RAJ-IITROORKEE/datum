@@ -190,3 +190,16 @@ model RevitCommandJob {
   @@index([agentSessionId])
   @@index([createdAt])
 }
+
+model RevitRelayToken {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  clerkUserId String   @unique // One active token per user
+  token       String
+  relayUrl    String
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("revit_relay_tokens")
+  @@index([expiresAt])
+}
