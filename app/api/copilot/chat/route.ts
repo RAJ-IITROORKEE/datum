@@ -1458,37 +1458,39 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
       continue2BhkWorkflow;
     const canRun2BhkWorkflow = revitConnected && isHouseWorkflowIntent && !isAgenticBuildRequest;
 
-    if (!revitConnected && isRevitExecutionBuildIntent(userText)) {
-      const disconnectedExecutionText =
-        "I can execute this in Revit, but no active execution transport is available right now. Reconnect Cloud Relay (or legacy local agent), keep Revit open, then retry.";
+    // Skip legacy workflow checks if new agent system is enabled
+    if (!USE_NEW_AGENT_SYSTEM) {
+      if (!revitConnected && isRevitExecutionBuildIntent(userText)) {
+        const disconnectedExecutionText =
+          "I can execute this in Revit, but no active execution transport is available right now. Reconnect Cloud Relay (or legacy local agent), keep Revit open, then retry.";
 
-      await prisma.chatMessage.create({
-        data: {
-          conversationId: conversation.id,
-          role: "assistant",
-          content: disconnectedExecutionText,
-        },
-      });
+        await prisma.chatMessage.create({
+          data: {
+            conversationId: conversation.id,
+            role: "assistant",
+            content: disconnectedExecutionText,
+          },
+        });
 
-      return buildImmediateSseResponse(disconnectedExecutionText, conversation.id);
-    }
+        return buildImmediateSseResponse(disconnectedExecutionText, conversation.id);
+      }
 
-    if (requiresBuildClarification(userText)) {
-      const clarifyText =
-        "I can run this fully agentically, but I need one input before execution: target scope. Reply with one option: (1) 1BHK compact, (2) 2BHK standard, (3) 3BHK, or provide custom size (example: 14m x 12m, 2 bedrooms).";
+      if (requiresBuildClarification(userText)) {
+        const clarifyText =
+          "I can run this fully agentically, but I need one input before execution: target scope. Reply with one option: (1) 1BHK compact, (2) 2BHK standard, (3) 3BHK, or provide custom size (example: 14m x 12m, 2 bedrooms).";
 
-      await prisma.chatMessage.create({
-        data: {
-          conversationId: conversation.id,
-          role: "assistant",
-          content: clarifyText,
-        },
-      });
+        await prisma.chatMessage.create({
+          data: {
+            conversationId: conversation.id,
+            role: "assistant",
+            content: clarifyText,
+          },
+        });
 
-      return buildImmediateSseResponse(clarifyText, conversation.id);
-    }
+        return buildImmediateSseResponse(clarifyText, conversation.id);
+      }
 
-    if (canRun2BhkWorkflow) {
+      if (canRun2BhkWorkflow) {
       const encoder = new TextEncoder();
       let finalResponse = "";
 
@@ -2025,6 +2027,7 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
         },
       });
     }
+    } // End of if (!USE_NEW_AGENT_SYSTEM)
 
     const autoToolCall =
       enableMCP && mcpCatalogAvailable && !isAgenticBuildRequest

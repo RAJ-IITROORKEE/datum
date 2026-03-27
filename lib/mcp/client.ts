@@ -255,7 +255,8 @@ class MCPClient {
     method: string, 
     params: Record<string, unknown>, 
     relayToken?: string,
-    retriesLeft = 2
+    retriesLeft = 2,
+    timeoutMs = 30000  // 30 second timeout
   ): Promise<any> {
     await this.ensureInitialized();
     this.debugInfo.lastRpcMethod = method;
@@ -272,51 +273,69 @@ class MCPClient {
       headers["X-Relay-Token"] = relayToken;
     }
 
-    const response = await fetch(`${this.baseUrl}/mcp`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: Date.now(),
-        method,
-        params,
-      }),
-    });
+    // Create abort controller for timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-    if (!response.ok) {
-      const raw = await response.text();
-      this.debugInfo.lastRpcStatus = response.status;
-      this.debugInfo.lastError = `HTTP ${response.status}${raw ? `: ${raw.slice(0, 240)}` : ""}`;
-      if (retriesLeft > 0 && this.shouldRetrySession(response.status, raw)) {
-        this.resetSession();
-        this.debugInfo.lastRecoveryAt = new Date().toISOString();
-        return this.callRpc(method, params, relayToken, retriesLeft - 1);
+    try {
+      const response = await fetch(`${this.baseUrl}/mcp`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: Date.now(),
+          method,
+          params,
+        }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const raw = await response.text();
+        this.debugInfo.lastRpcStatus = response.status;
+        this.debugInfo.lastError = `HTTP ${response.status}${raw ? `: ${raw.slice(0, 240)}` : ""}`;
+        if (retriesLeft > 0 && this.shouldRetrySession(response.status, raw)) {
+          this.resetSession();
+          this.debugInfo.lastRecoveryAt = new Date().toISOString();
+          return this.callRpc(method, params, relayToken, retriesLeft - 1, timeoutMs);
+        }
+        throw new Error(`MCP RPC failed (${method}): ${response.status}`);
       }
-      throw new Error(`MCP RPC failed (${method}): ${response.status}`);
-    }
 
-    const data = await this.parseRpcResponse(response);
-    this.debugInfo.lastRpcStatus = 200;
-    if (data?.error) {
-      const message = String(data.error.message || `MCP RPC error: ${method}`);
-      this.debugInfo.lastError = message;
-      const normalized = message.toLowerCase();
-      if (
-        retriesLeft > 0 &&
-        (normalized.includes("server not initialized") ||
-          normalized.includes("invalid or missing session") ||
-          normalized.includes("no valid session"))
-      ) {
-        this.resetSession();
-        this.debugInfo.lastRecoveryAt = new Date().toISOString();
-        return this.callRpc(method, params, relayToken, retriesLeft - 1);
+      const data = await this.parseRpcResponse(response);
+      this.debugInfo.lastRpcStatus = 200;
+      if (data?.error) {
+        const message = String(data.error.message || `MCP RPC error: ${method}`);
+        this.debugInfo.lastError = message;
+        const normalized = message.toLowerCase();
+        if (
+          retriesLeft > 0 &&
+          (normalized.includes("server not initialized") ||
+            normalized.includes("invalid or missing session") ||
+            normalized.includes("no valid session"))
+        ) {
+          this.resetSession();
+          this.debugInfo.lastRecoveryAt = new Date().toISOString();
+          return this.callRpc(method, params, relayToken, retriesLeft - 1, timeoutMs);
+        }
+        throw new Error(data.error.message || `MCP RPC error: ${method}`);
       }
-      throw new Error(data.error.message || `MCP RPC error: ${method}`);
+
+      this.debugInfo.lastError = null;
+
+      return data?.result;
+    } catch (error) {
+      clearTimeout(timeoutId);
+      
+      if (error instanceof Error && error.name === 'AbortError') {
+        this.debugInfo.lastError = `MCP RPC timeout after ${timeoutMs}ms`;
+        throw new Error(`MCP tool call timed out after ${timeoutMs / 1000}s. The Revit plugin may not be responding. Check if Revit is running and the plugin is connected.`);
+      }
+      
+      throw error;
     }
-
-    this.debugInfo.lastError = null;
-
-    return data?.result;
   }
 
   /**
@@ -390,17 +409,19 @@ class MCPClient {
   /**
    * Call a specific MCP tool
    * @param relayToken Optional relay token for routing to specific Revit instance
+   * @param timeoutMs Optional timeout in milliseconds (default 30000)
    */
   async callTool(
     toolName: string, 
     args: Record<string, any>,
-    relayToken?: string
+    relayToken?: string,
+    timeoutMs = 30000
   ): Promise<MCPToolResult> {
     try {
       const result = await this.callRpc("tools/call", {
         name: toolName,
         arguments: args,
-      }, relayToken);
+      }, relayToken, 2, timeoutMs);
 
       return {
         success: true,
