@@ -55,6 +55,7 @@ interface AgentProgressEvent {
 interface ConnectionStatus {
   mcpConnected: boolean;
   revitConnected: boolean;
+  isRelayConnected?: boolean;
   activeDevice: string | null;
   toolCount: number;
   lastChecked: number;
@@ -210,6 +211,7 @@ export function ChatInterface({
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>({
     mcpConnected: false,
     revitConnected: false,
+    isRelayConnected: false,
     activeDevice: null,
     toolCount: 0,
     lastChecked: 0,
@@ -247,13 +249,14 @@ export function ChatInterface({
         const newStatus: ConnectionStatus = {
           mcpConnected: data.connected,
           revitConnected: data.revitConnected,
+          isRelayConnected: data.isRelayConnected || false,
           activeDevice: data.activeDevice,
           toolCount: data.toolCount || 0,
           lastChecked: Date.now(),
         };
         
         // Check if connection was lost during execution
-        if (isLoading && connectionStatus.revitConnected && !newStatus.revitConnected) {
+        if (isLoading && connectionStatus.revitConnected && !newStatus.revitConnected && !newStatus.isRelayConnected) {
           setConnectionLostDuringExecution(true);
           // Add error event to agent events
           setAgentEvents((prev) => [
@@ -326,9 +329,10 @@ export function ChatInterface({
   };
 
   const getAgentEventDotClassName = (stage: AgentProgressEvent["stage"]): string => {
-    if (stage === "completed") return "bg-green-500";
-    if (stage === "error") return "bg-red-500";
-    return "bg-blue-500";
+    if (stage === "completed") return "bg-green-500 shadow-[0_0_4px_rgba(34,197,94,0.5)]";
+    if (stage === "error") return "bg-red-500 shadow-[0_0_4px_rgba(239,68,68,0.5)]";
+    if (stage === "executing") return "bg-blue-500 shadow-[0_0_4px_rgba(59,130,246,0.5)] animate-pulse";
+    return "bg-blue-500 shadow-[0_0_4px_rgba(59,130,246,0.5)]";
   };
 
   const getVisibleAgentStatus = (): string => {
@@ -343,11 +347,19 @@ export function ChatInterface({
   const latestPlan = [...agentEvents].reverse().find((event) => event.kind === "plan" && event.plan)?.plan || [];
 
   const getPlanStatusDotClass = (status: "pending" | "in_progress" | "completed" | "failed" | "blocked"): string => {
-    if (status === "completed") return "bg-green-500";
-    if (status === "failed") return "bg-red-500";
-    if (status === "blocked") return "bg-amber-500";
-    if (status === "in_progress") return "bg-blue-500";
-    return "bg-muted-foreground";
+    if (status === "completed") return "bg-green-500 shadow-[0_0_4px_rgba(34,197,94,0.5)]";
+    if (status === "failed") return "bg-red-500 shadow-[0_0_4px_rgba(239,68,68,0.5)]";
+    if (status === "blocked") return "bg-amber-500 shadow-[0_0_4px_rgba(245,158,11,0.5)]";
+    if (status === "in_progress") return "bg-blue-500 shadow-[0_0_4px_rgba(59,130,246,0.5)] animate-pulse";
+    return "bg-muted-foreground/40";
+  };
+  
+  const getPlanStatusBadgeClass = (status: "pending" | "in_progress" | "completed" | "failed" | "blocked"): string => {
+    if (status === "completed") return "bg-green-500/10 text-green-600 dark:text-green-400 border-green-200 dark:border-green-800";
+    if (status === "failed") return "bg-red-500/10 text-red-600 dark:text-red-400 border-red-200 dark:border-red-800";
+    if (status === "blocked") return "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800";
+    if (status === "in_progress") return "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800";
+    return "bg-muted/50 text-muted-foreground border-muted";
   };
 
   const processStreamLine = (
@@ -520,8 +532,8 @@ export function ChatInterface({
 
   // Connection status indicator component
   const ConnectionIndicator = () => {
-    const isFullyConnected = connectionStatus.mcpConnected && connectionStatus.revitConnected;
-    const isPartiallyConnected = connectionStatus.mcpConnected && !connectionStatus.revitConnected;
+    const isFullyConnected = connectionStatus.mcpConnected && (connectionStatus.revitConnected || connectionStatus.isRelayConnected);
+    const isPartiallyConnected = connectionStatus.mcpConnected && !connectionStatus.revitConnected && !connectionStatus.isRelayConnected;
     
     if (connectionLostDuringExecution) {
       return (
@@ -536,7 +548,9 @@ export function ChatInterface({
       return (
         <div className="flex items-center gap-2 rounded-lg bg-green-500/10 px-3 py-1.5 text-xs">
           <Zap className="h-3.5 w-3.5 text-green-500" />
-          <span className="font-medium text-green-600 dark:text-green-400">Ready</span>
+          <span className="font-medium text-green-600 dark:text-green-400">
+            {connectionStatus.isRelayConnected ? "Cloud Ready" : "Ready"}
+          </span>
           <span className="text-muted-foreground">({connectionStatus.toolCount} tools)</span>
         </div>
       );
@@ -697,14 +711,19 @@ export function ChatInterface({
                           ) : (
                             <div className="space-y-2 rounded-md border bg-muted/20 p-2">
                               {latestPlan.map((step) => (
-                                <div key={step.id} className="rounded-md bg-background px-2 py-1.5">
-                                  <div className="mb-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+                                <div key={step.id} className="rounded-md bg-background border px-2 py-1.5 hover:border-blue-200 dark:hover:border-blue-800 transition-colors">
+                                  <div className="mb-1 flex items-center gap-2 text-[11px]">
                                     <span className={cn("h-1.5 w-1.5 rounded-full", getPlanStatusDotClass(step.status))} />
-                                    <span className="uppercase tracking-wide">{step.status.replace("_", " ")}</span>
-                                    {step.toolName ? <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-foreground">{step.toolName}</span> : null}
+                                    <Badge variant="outline" className={cn("uppercase tracking-wide px-1.5 py-0 text-[10px] font-medium", getPlanStatusBadgeClass(step.status))}>
+                                      {step.status === "in_progress" && <Loader2 className="mr-1 h-2.5 w-2.5 animate-spin" />}
+                                      {step.status === "completed" && <CheckCircle2 className="mr-1 h-2.5 w-2.5" />}
+                                      {step.status === "failed" && <AlertCircle className="mr-1 h-2.5 w-2.5" />}
+                                      {step.status.replace("_", " ")}
+                                    </Badge>
+                                    {step.toolName ? <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-foreground font-mono">{step.toolName}</span> : null}
                                   </div>
-                                  <p className="text-xs text-foreground">{step.title}</p>
-                                  {step.reason ? <p className="mt-1 text-[11px] text-muted-foreground">{step.reason}</p> : null}
+                                  <p className="text-xs text-foreground font-medium">{step.title}</p>
+                                  {step.reason ? <p className="mt-1 text-[11px] text-muted-foreground italic">{step.reason}</p> : null}
                                 </div>
                               ))}
                             </div>
@@ -728,13 +747,25 @@ export function ChatInterface({
                           ) : (
                             <div className="space-y-2 rounded-md border bg-muted/20 p-2">
                               {analysisEvents.map((event) => (
-                                <div key={`analysis-${event.timestamp ?? event.message}`} className="rounded-md bg-background px-2 py-1.5">
-                                  <div className="mb-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+                                <div key={`analysis-${event.timestamp ?? event.message}`} className="rounded-md bg-background border px-2 py-1.5 hover:border-purple-200 dark:hover:border-purple-800 transition-colors">
+                                  <div className="mb-1 flex items-center gap-2 text-[11px]">
                                     <span className={cn("h-1.5 w-1.5 rounded-full", getAgentEventDotClassName(event.stage))} />
-                                    <span className="uppercase tracking-wide">{event.stage}</span>
+                                    <Badge variant="outline" className={cn(
+                                      "uppercase tracking-wide px-1.5 py-0 text-[10px] font-medium",
+                                      event.stage === "completed" && "bg-green-500/10 text-green-600 dark:text-green-400 border-green-200 dark:border-green-800",
+                                      event.stage === "error" && "bg-red-500/10 text-red-600 dark:text-red-400 border-red-200 dark:border-red-800",
+                                      event.stage === "executing" && "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800",
+                                      event.stage === "planning" && "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800"
+                                    )}>
+                                      {event.stage === "planning" && <Brain className="mr-1 h-2.5 w-2.5" />}
+                                      {event.stage === "executing" && <Loader2 className="mr-1 h-2.5 w-2.5 animate-spin" />}
+                                      {event.stage === "completed" && <CheckCircle2 className="mr-1 h-2.5 w-2.5" />}
+                                      {event.stage === "error" && <AlertCircle className="mr-1 h-2.5 w-2.5" />}
+                                      {event.stage}
+                                    </Badge>
                                   </div>
-                                  <p className="text-xs text-foreground">{event.message}</p>
-                                  {event.details ? <pre className="mt-1 overflow-auto rounded bg-muted/50 p-2 text-[11px] text-muted-foreground">{event.details}</pre> : null}
+                                  <p className="text-xs text-foreground font-medium">{event.message}</p>
+                                  {event.details ? <pre className="mt-1 overflow-auto rounded bg-muted/50 border p-2 text-[11px] text-muted-foreground">{event.details}</pre> : null}
                                 </div>
                               ))}
                             </div>
@@ -758,14 +789,26 @@ export function ChatInterface({
                           ) : (
                             <div className="space-y-2 rounded-md border bg-muted/20 p-2">
                               {toolEvents.map((event) => (
-                                <div key={`tool-${event.timestamp ?? event.message}-${event.toolName ?? "unknown"}`} className="rounded-md bg-background px-2 py-1.5">
-                                  <div className="mb-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+                                <div key={`tool-${event.timestamp ?? event.message}-${event.toolName ?? "unknown"}`} className="rounded-md bg-background border px-2 py-1.5 hover:border-blue-200 dark:hover:border-blue-800 transition-colors">
+                                  <div className="mb-1 flex items-center gap-2 text-[11px]">
                                     <span className={cn("h-1.5 w-1.5 rounded-full", getAgentEventDotClassName(event.stage))} />
-                                    <span className="uppercase tracking-wide">{event.stage}</span>
-                                    {event.toolName ? <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-foreground">{event.toolName}</span> : null}
+                                    <Badge variant="outline" className={cn(
+                                      "uppercase tracking-wide px-1.5 py-0 text-[10px] font-medium",
+                                      event.stage === "completed" && "bg-green-500/10 text-green-600 dark:text-green-400 border-green-200 dark:border-green-800",
+                                      event.stage === "error" && "bg-red-500/10 text-red-600 dark:text-red-400 border-red-200 dark:border-red-800",
+                                      event.stage === "executing" && "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800",
+                                      event.stage === "planning" && "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800"
+                                    )}>
+                                      {event.stage === "executing" && <Loader2 className="mr-1 h-2.5 w-2.5 animate-spin" />}
+                                      {event.stage === "completed" && <CheckCircle2 className="mr-1 h-2.5 w-2.5" />}
+                                      {event.stage === "error" && <AlertCircle className="mr-1 h-2.5 w-2.5" />}
+                                      {event.stage === "planning" && <Brain className="mr-1 h-2.5 w-2.5" />}
+                                      {event.stage}
+                                    </Badge>
+                                    {event.toolName ? <span className="rounded bg-blue-500/10 border border-blue-200 dark:border-blue-800 px-1.5 py-0.5 text-[10px] text-blue-600 dark:text-blue-400 font-mono">{event.toolName}</span> : null}
                                   </div>
-                                  <p className="text-xs text-foreground">{event.message}</p>
-                                  {event.details ? <pre className="mt-1 overflow-auto rounded bg-muted/50 p-2 text-[11px] text-muted-foreground">{event.details}</pre> : null}
+                                  <p className="text-xs text-foreground font-medium">{event.message}</p>
+                                  {event.details ? <pre className="mt-1 overflow-auto rounded bg-muted/50 p-2 text-[11px] text-muted-foreground border">{event.details}</pre> : null}
                                 </div>
                               ))}
                             </div>
