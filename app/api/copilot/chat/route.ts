@@ -1364,11 +1364,27 @@ export async function POST(req: NextRequest) {
     let mcpToolCount = 0;
     let mcpReason = "";
     let revitConnected = legacyRevitConnected;
+    
+    // Check for active relay token (cloud connection)
+    let hasActiveRelayToken = false;
+    try {
+      const relayToken = await prisma.revitRelayToken.findFirst({
+        where: {
+          clerkUserId: userId,
+          expiresAt: { gt: new Date() },
+        },
+      });
+      hasActiveRelayToken = !!relayToken;
+    } catch (error) {
+      console.error("Failed to check relay token:", error);
+    }
+    
     if (enableMCP) {
       try {
         const mcpClient = getMCPClient();
         const isHealthy = await mcpClient.testConnection();
-        mcpConnected = isHealthy;
+        // MCP is connected if server is healthy AND user has an active relay token
+        mcpConnected = isHealthy && hasActiveRelayToken;
 
         try {
           mcpTools = await mcpClient.listTools();
@@ -1385,7 +1401,8 @@ export async function POST(req: NextRequest) {
         if (mcpCatalogAvailable) {
           const toolNamesCsv = mcpTools.map((t) => t.name).join(", ");
           const toolsList = mcpTools.map((t) => `- ${t.name}: ${t.description}`).join("\n");
-          mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=${mcpConnected ? "CONNECTED" : "DISCONNECTED"}\nMCP_CATALOG_STATUS=AVAILABLE\nMCP_TOOL_COUNT=${mcpToolCount}\nLEGACY_AGENT_HEARTBEAT=${legacyRevitConnected ? "CONNECTED" : "DISCONNECTED"}\nREVIT_EXECUTION_STATUS=${(mcpConnected || legacyRevitConnected) ? "CONNECTED" : "DISCONNECTED"}\nEXECUTION_TRANSPORT=PRIMARY_MCP_RELAY_WITH_LEGACY_JOB_FALLBACK\n\nYou have access to ${mcpToolCount} Revit MCP tools for BIM automation:\n\n${toolsList}\n\nExecution architecture (authoritative): Browser LLM -> Datum API -> MCP on Railway + Cloud Relay -> Revit plugin -> Revit model.
+          const relayStatus = hasActiveRelayToken ? "CONNECTED" : "NO_TOKEN";
+          mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=${mcpConnected ? "CONNECTED" : "DISCONNECTED"}\nMCP_CATALOG_STATUS=AVAILABLE\nMCP_TOOL_COUNT=${mcpToolCount}\nCLOUD_RELAY_STATUS=${relayStatus}\nLEGACY_AGENT_HEARTBEAT=${legacyRevitConnected ? "CONNECTED" : "DISCONNECTED"}\nREVIT_EXECUTION_STATUS=${(mcpConnected || legacyRevitConnected) ? "CONNECTED" : "DISCONNECTED"}\nEXECUTION_TRANSPORT=${mcpConnected ? "PRIMARY_CLOUD_RELAY" : "LEGACY_LOCAL_AGENT"}\n\nYou have access to ${mcpToolCount} Revit MCP tools for BIM automation:\n\n${toolsList}\n\nExecution architecture (authoritative): Browser LLM -> Datum API -> MCP on Railway + Cloud Relay -> Revit plugin -> Revit model.
 - Treat MCP_CONNECTION_STATUS=CONNECTED as live execution available, even if LEGACY_AGENT_HEARTBEAT=DISCONNECTED.
 - Use exact tool names from this catalog only.
 - For executable tasks, execute tools directly; do not ask user to reconnect local-only agent when MCP relay is connected.
@@ -1395,12 +1412,14 @@ For manual execution format:
 /run <tool_name> <json_args>
 Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
         } else {
-          mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=${mcpConnected ? "CONNECTED" : "DISCONNECTED"}\nMCP_CATALOG_STATUS=UNAVAILABLE\nMCP_TOOL_COUNT=0\nLEGACY_AGENT_HEARTBEAT=${legacyRevitConnected ? "CONNECTED" : "DISCONNECTED"}\nREVIT_EXECUTION_STATUS=${(mcpConnected || legacyRevitConnected) ? "CONNECTED" : "DISCONNECTED"}\nEXECUTION_TRANSPORT=PRIMARY_MCP_RELAY_WITH_LEGACY_JOB_FALLBACK\nNote: MCP tool catalog is currently unavailable.`;
+          const relayStatus = hasActiveRelayToken ? "CONNECTED" : "NO_TOKEN";
+          mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=${mcpConnected ? "CONNECTED" : "DISCONNECTED"}\nMCP_CATALOG_STATUS=UNAVAILABLE\nMCP_TOOL_COUNT=0\nCLOUD_RELAY_STATUS=${relayStatus}\nLEGACY_AGENT_HEARTBEAT=${legacyRevitConnected ? "CONNECTED" : "DISCONNECTED"}\nREVIT_EXECUTION_STATUS=${(mcpConnected || legacyRevitConnected) ? "CONNECTED" : "DISCONNECTED"}\nEXECUTION_TRANSPORT=${mcpConnected ? "PRIMARY_CLOUD_RELAY" : "LEGACY_LOCAL_AGENT"}\nNote: MCP tool catalog is currently unavailable.`;
         }
       } catch (error) {
         console.error("Failed to load MCP tools:", error);
         mcpReason = error instanceof Error ? error.message : "Unknown MCP error";
-        mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=DISCONNECTED\nMCP_CATALOG_STATUS=UNAVAILABLE\nMCP_TOOL_COUNT=0\nLEGACY_AGENT_HEARTBEAT=${legacyRevitConnected ? "CONNECTED" : "DISCONNECTED"}\nREVIT_EXECUTION_STATUS=${legacyRevitConnected ? "CONNECTED" : "DISCONNECTED"}\nEXECUTION_TRANSPORT=PRIMARY_MCP_RELAY_WITH_LEGACY_JOB_FALLBACK\nNote: MCP tools connection is currently unavailable.`;
+        const relayStatus = hasActiveRelayToken ? "CONNECTED" : "NO_TOKEN";
+        mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=DISCONNECTED\nMCP_CATALOG_STATUS=UNAVAILABLE\nMCP_TOOL_COUNT=0\nCLOUD_RELAY_STATUS=${relayStatus}\nLEGACY_AGENT_HEARTBEAT=${legacyRevitConnected ? "CONNECTED" : "DISCONNECTED"}\nREVIT_EXECUTION_STATUS=${legacyRevitConnected ? "CONNECTED" : "DISCONNECTED"}\nEXECUTION_TRANSPORT=LEGACY_LOCAL_AGENT\nNote: MCP tools connection is currently unavailable.`;
       }
     }
 
@@ -1413,8 +1432,9 @@ Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
       const directRunText = revitConnected ? "Available" : "Unavailable";
       const deviceSuffix = recentAgentSession?.deviceName ? ` (${recentAgentSession.deviceName})` : "";
       const mcpReasonLine = mcpReason ? `\n- MCP Reason: ${mcpReason}` : "";
+      const relayTokenText = hasActiveRelayToken ? "Active" : "Not Generated";
 
-      const statusText = `Connection Status\n- MCP Server: ${mcpServerText}\n- MCP Catalog: ${mcpCatalogText}\n- Cloud Relay + Plugin: ${mcpConnected ? "Connected" : "Unknown"}\n- Legacy Local Heartbeat: ${legacyRevitConnected ? "Connected" : "Disconnected"}${deviceSuffix}\n- Direct /run Execution: ${directRunText}${mcpReasonLine}\n\nTo execute a tool now, use:\n/run <tool_name> <json_args>\nExample: /run get_levels_list {}`;
+      const statusText = `Connection Status\n- MCP Server: ${mcpServerText}\n- MCP Catalog: ${mcpCatalogText}\n- Cloud Relay Token: ${relayTokenText}\n- Cloud Relay + Plugin: ${mcpConnected ? "Connected" : "Disconnected"}\n- Legacy Local Heartbeat: ${legacyRevitConnected ? "Connected" : "Disconnected"}${deviceSuffix}\n- Direct /run Execution: ${directRunText}${mcpReasonLine}\n\nTo execute a tool now, use:\n/run <tool_name> <json_args>\nExample: /run get_levels_list {}`;
 
       await prisma.chatMessage.create({
         data: {
