@@ -33,13 +33,46 @@ export async function GET() {
       }
     }
 
+    // Check legacy agent session
     const recentSession = await prisma.revitAgentSession.findFirst({
       where: { clerkUserId: userId },
       orderBy: { lastSeenAt: "desc" },
     });
-
-    const revitConnected =
+    const legacyRevitConnected =
       !!recentSession && Date.now() - new Date(recentSession.lastSeenAt).getTime() <= 30_000;
+
+    // Check cloud relay connection
+    let relayRevitConnected = false;
+    let relayToken: string | null = null;
+    try {
+      const tokenRecord = await prisma.revitRelayToken.findUnique({
+        where: { clerkUserId: userId },
+      });
+      
+      if (tokenRecord && new Date() <= tokenRecord.expiresAt) {
+        relayToken = tokenRecord.token;
+        
+        // Check relay status
+        const relayStatusResponse = await fetch(
+          `${process.env.MCP_SERVER_URL}/api/relay/token/${relayToken}`,
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.MCP_API_KEY}`,
+            },
+          }
+        );
+        
+        if (relayStatusResponse.ok) {
+          const relayStatus = await relayStatusResponse.json();
+          relayRevitConnected = !!relayStatus.revitClientId;
+        }
+      }
+    } catch (error) {
+      console.warn("Failed to check relay status:", error);
+    }
+
+    // Prefer relay connection over legacy
+    const revitConnected = relayRevitConnected || legacyRevitConnected;
 
     return NextResponse.json({
       connected,
@@ -47,6 +80,7 @@ export async function GET() {
       tools,
       toolCount: tools.length,
       revitConnected,
+      revitConnectionType: relayRevitConnected ? "relay" : legacyRevitConnected ? "legacy" : null,
       activeDevice: recentSession?.deviceName || null,
       reason,
       debug: mcpClient.getDebugInfo(),
@@ -58,6 +92,7 @@ export async function GET() {
       tools: [],
       toolCount: 0,
       revitConnected: false,
+      revitConnectionType: null,
       activeDevice: null,
       reason: error instanceof Error ? error.message : "Unknown MCP error",
     });
