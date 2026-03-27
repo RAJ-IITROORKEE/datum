@@ -16,7 +16,7 @@ const APP_DIR = path.join(os.homedir(), "AppData", "Roaming", "DatumRevitAgent")
 const CONFIG_PATH = process.env.DATUM_AGENT_CONFIG || path.join(APP_DIR, "config.json");
 const LOG_PATH = path.join(APP_DIR, "agent.log");
 const LOCK_PATH = path.join(APP_DIR, "agent.lock");
-const AGENT_VERSION = "1.4.1";
+const AGENT_VERSION = "1.5.0";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TERMINAL COLORS & STYLING
@@ -255,7 +255,11 @@ const args = parseArgs(process.argv.slice(2));
 const config = loadConfig();
 
 // Auto-detect development mode
-const DEFAULT_DATUM_URL = "https://datumcopilot.vercel.app";
+const DEFAULT_DATUM_URLS = [
+  "https://datumcopilot.vercel.app",
+  "https://datumm.ai",
+  "https://www.datumm.ai",
+];
 const LOCALHOST_DEV_URL = "http://localhost:3000";
 
 // Priority: CLI arg > env var > config file > auto-detect > production
@@ -269,13 +273,13 @@ const configuredDatumFallbacks = parseUrlList(
 let urlList;
 if (configuredDatumUrl === LOCALHOST_DEV_URL || process.env.NODE_ENV === "development") {
   // Development mode: localhost first, then production as fallback
-  urlList = [LOCALHOST_DEV_URL, ...configuredDatumFallbacks, DEFAULT_DATUM_URL];
+  urlList = [LOCALHOST_DEV_URL, ...configuredDatumFallbacks, ...DEFAULT_DATUM_URLS];
 } else if (configuredDatumUrl) {
   // Explicit URL provided: use it first, then fallbacks, then localhost (for dev flexibility), then production
-  urlList = [configuredDatumUrl, ...configuredDatumFallbacks, LOCALHOST_DEV_URL, DEFAULT_DATUM_URL];
+  urlList = [configuredDatumUrl, ...configuredDatumFallbacks, LOCALHOST_DEV_URL, ...DEFAULT_DATUM_URLS];
 } else {
   // No explicit URL: try localhost first (for dev), then production
-  urlList = [LOCALHOST_DEV_URL, DEFAULT_DATUM_URL, ...configuredDatumFallbacks];
+  urlList = [LOCALHOST_DEV_URL, ...DEFAULT_DATUM_URLS, ...configuredDatumFallbacks];
 }
 
 const DATUM_URLS = Array.from(new Set(urlList.filter(Boolean)));
@@ -633,6 +637,7 @@ function apiRequest(baseUrl, requestPath, options = {}) {
 
 async function api(requestPath, options = {}) {
   let lastError = null;
+  const attemptedEndpoints = [];
 
   for (const baseUrl of DATUM_URLS) {
     try {
@@ -645,13 +650,24 @@ async function api(requestPath, options = {}) {
       return response;
     } catch (error) {
       lastError = error;
+      attemptedEndpoints.push({
+        baseUrl,
+        message: error && error.message ? error.message : String(error),
+      });
       if (!isNetworkRetryableError(error)) {
         throw error;
       }
     }
   }
 
-  throw lastError || new Error("Failed to reach Datum API");
+  const attemptsSummary = attemptedEndpoints
+    .map((a) => `${a.baseUrl} -> ${a.message}`)
+    .join(" | ");
+  const wrappedError = new Error(
+    `Failed to reach Datum API. Tried: ${attemptsSummary || "no endpoints"}`
+  );
+  wrappedError.code = lastError && lastError.code ? lastError.code : undefined;
+  throw wrappedError;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -735,6 +751,7 @@ async function pairFlow() {
 
   console.log("");
   log("Validating pairing code...", "info");
+  log(`Pair endpoint candidates: ${DATUM_URLS.join(", ")}`, "debug");
 
   const pairResult = await api("/api/revit/agent/pair", {
     method: "POST",
@@ -759,7 +776,14 @@ async function pairWithRetry() {
       await pairFlow();
       break;
     } catch (error) {
-      log(`Pairing failed: ${error.message || String(error)}`, "error");
+      const message = error && error.message ? error.message : String(error);
+      log(`Pairing failed: ${message}`, "error");
+      if (isNetworkRetryableError(error)) {
+        log(
+          "Network timeout/refusal detected. If this repeats on another machine, run with --url https://datumm.ai (or check firewall/proxy allowing HTTPS to Vercel/custom domains).",
+          "warning"
+        );
+      }
       const retry = (await promptLine("  Try again? (y/n): ")).trim().toLowerCase();
       if (retry !== "y" && retry !== "yes") {
         throw new Error("Pairing cancelled by user");

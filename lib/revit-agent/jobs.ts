@@ -47,11 +47,11 @@ export async function waitForCommandResult(jobId: string) {
 
   await prisma.revitCommandJob.update({
     where: { id: jobId },
-    data: { status: "TIMEOUT", error: "Timed out waiting for local Revit agent" },
+    data: { status: "TIMEOUT", error: "Timed out waiting for Revit response" },
   });
 
   return {
     success: false as const,
-    error: "Timed out waiting for local Revit agent. Ensure Revit + Datum Agent are running.",
+    error: "Timed out waiting for Revit response. Check that the Revit plugin is connected via Cloud Relay.",
   };
 }

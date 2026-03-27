@@ -1401,8 +1401,27 @@ export async function POST(req: NextRequest) {
         if (mcpCatalogAvailable) {
           const toolNamesCsv = mcpTools.map((t) => t.name).join(", ");
           const toolsList = mcpTools.map((t) => `- ${t.name}: ${t.description}`).join("\n");
-          const relayStatus = hasActiveRelayToken ? "CONNECTED" : "NO_TOKEN";
-          mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=${mcpConnected ? "CONNECTED" : "DISCONNECTED"}\nMCP_CATALOG_STATUS=AVAILABLE\nMCP_TOOL_COUNT=${mcpToolCount}\nCLOUD_RELAY_STATUS=${relayStatus}\nLEGACY_AGENT_HEARTBEAT=${legacyRevitConnected ? "CONNECTED" : "DISCONNECTED"}\nREVIT_EXECUTION_STATUS=${(mcpConnected || legacyRevitConnected) ? "CONNECTED" : "DISCONNECTED"}\nEXECUTION_TRANSPORT=${mcpConnected ? "PRIMARY_CLOUD_RELAY" : "LEGACY_LOCAL_AGENT"}\n\nYou have access to ${mcpToolCount} Revit MCP tools for BIM automation:\n\n${toolsList}\n\nExecution architecture (authoritative): Browser LLM -> Datum API -> MCP on Railway + Cloud Relay -> Revit plugin -> Revit model.
+          
+          if (USE_NEW_AGENT_SYSTEM) {
+            // Simplified context for new agent system - no legacy agent references
+            mcpSystemMessage = `\n\nREVIT_CONNECTION=CLOUD_RELAY
+RELAY_STATUS=${hasActiveRelayToken ? "CONNECTED" : "NOT_CONNECTED"}
+TOOL_COUNT=${mcpToolCount}
+
+You have access to ${mcpToolCount} Revit MCP tools for BIM automation:
+
+${toolsList}
+
+IMPORTANT INSTRUCTIONS:
+- You are connected to Revit via Cloud Relay. Execute tools directly when the user requests BIM operations.
+- Do NOT mention "Datum Agent", "local agent", or ask user to check connections. Just execute the tools.
+- If a tool fails, report the specific error and suggest alternatives.
+- Use exact tool names from the catalog above.
+MCP_TOOL_NAMES=${toolNamesCsv}`;
+          } else {
+            // Legacy system message
+            const relayStatus = hasActiveRelayToken ? "CONNECTED" : "NO_TOKEN";
+            mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=${mcpConnected ? "CONNECTED" : "DISCONNECTED"}\nMCP_CATALOG_STATUS=AVAILABLE\nMCP_TOOL_COUNT=${mcpToolCount}\nCLOUD_RELAY_STATUS=${relayStatus}\nLEGACY_AGENT_HEARTBEAT=${legacyRevitConnected ? "CONNECTED" : "DISCONNECTED"}\nREVIT_EXECUTION_STATUS=${(mcpConnected || legacyRevitConnected) ? "CONNECTED" : "DISCONNECTED"}\nEXECUTION_TRANSPORT=${mcpConnected ? "PRIMARY_CLOUD_RELAY" : "LEGACY_LOCAL_AGENT"}\n\nYou have access to ${mcpToolCount} Revit MCP tools for BIM automation:\n\n${toolsList}\n\nExecution architecture (authoritative): Browser LLM -> Datum API -> MCP on Railway + Cloud Relay -> Revit plugin -> Revit model.
 - Treat MCP_CONNECTION_STATUS=CONNECTED as live execution available, even if LEGACY_AGENT_HEARTBEAT=DISCONNECTED.
 - Use exact tool names from this catalog only.
 - For executable tasks, execute tools directly; do not ask user to reconnect local-only agent when MCP relay is connected.
@@ -1411,15 +1430,31 @@ MCP_TOOL_NAMES=${toolNamesCsv}
 For manual execution format:
 /run <tool_name> <json_args>
 Avoid returning large raw JSON payloads unless user explicitly asks for JSON.`;
+          }
         } else {
-          const relayStatus = hasActiveRelayToken ? "CONNECTED" : "NO_TOKEN";
-          mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=${mcpConnected ? "CONNECTED" : "DISCONNECTED"}\nMCP_CATALOG_STATUS=UNAVAILABLE\nMCP_TOOL_COUNT=0\nCLOUD_RELAY_STATUS=${relayStatus}\nLEGACY_AGENT_HEARTBEAT=${legacyRevitConnected ? "CONNECTED" : "DISCONNECTED"}\nREVIT_EXECUTION_STATUS=${(mcpConnected || legacyRevitConnected) ? "CONNECTED" : "DISCONNECTED"}\nEXECUTION_TRANSPORT=${mcpConnected ? "PRIMARY_CLOUD_RELAY" : "LEGACY_LOCAL_AGENT"}\nNote: MCP tool catalog is currently unavailable.`;
+          if (USE_NEW_AGENT_SYSTEM) {
+            mcpSystemMessage = `\n\nREVIT_CONNECTION=UNAVAILABLE
+RELAY_STATUS=${hasActiveRelayToken ? "TOKEN_EXISTS_BUT_NO_CATALOG" : "NOT_CONNECTED"}
+TOOL_COUNT=0
+
+MCP tool catalog is currently unavailable. If the user wants to execute Revit operations, inform them that the connection to the Revit tools server could not be established.`;
+          } else {
+            const relayStatus = hasActiveRelayToken ? "CONNECTED" : "NO_TOKEN";
+            mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=${mcpConnected ? "CONNECTED" : "DISCONNECTED"}\nMCP_CATALOG_STATUS=UNAVAILABLE\nMCP_TOOL_COUNT=0\nCLOUD_RELAY_STATUS=${relayStatus}\nLEGACY_AGENT_HEARTBEAT=${legacyRevitConnected ? "CONNECTED" : "DISCONNECTED"}\nREVIT_EXECUTION_STATUS=${(mcpConnected || legacyRevitConnected) ? "CONNECTED" : "DISCONNECTED"}\nEXECUTION_TRANSPORT=${mcpConnected ? "PRIMARY_CLOUD_RELAY" : "LEGACY_LOCAL_AGENT"}\nNote: MCP tool catalog is currently unavailable.`;
+          }
         }
       } catch (error) {
         console.error("Failed to load MCP tools:", error);
         mcpReason = error instanceof Error ? error.message : "Unknown MCP error";
-        const relayStatus = hasActiveRelayToken ? "CONNECTED" : "NO_TOKEN";
-        mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=DISCONNECTED\nMCP_CATALOG_STATUS=UNAVAILABLE\nMCP_TOOL_COUNT=0\nCLOUD_RELAY_STATUS=${relayStatus}\nLEGACY_AGENT_HEARTBEAT=${legacyRevitConnected ? "CONNECTED" : "DISCONNECTED"}\nREVIT_EXECUTION_STATUS=${legacyRevitConnected ? "CONNECTED" : "DISCONNECTED"}\nEXECUTION_TRANSPORT=LEGACY_LOCAL_AGENT\nNote: MCP tools connection is currently unavailable.`;
+        if (USE_NEW_AGENT_SYSTEM) {
+          mcpSystemMessage = `\n\nREVIT_CONNECTION=ERROR
+ERROR=${mcpReason}
+
+Failed to connect to Revit tools server. If the user wants to execute Revit operations, inform them there was a connection error: ${mcpReason}`;
+        } else {
+          const relayStatus = hasActiveRelayToken ? "CONNECTED" : "NO_TOKEN";
+          mcpSystemMessage = `\n\nMCP_CONNECTION_STATUS=DISCONNECTED\nMCP_CATALOG_STATUS=UNAVAILABLE\nMCP_TOOL_COUNT=0\nCLOUD_RELAY_STATUS=${relayStatus}\nLEGACY_AGENT_HEARTBEAT=${legacyRevitConnected ? "CONNECTED" : "DISCONNECTED"}\nREVIT_EXECUTION_STATUS=${legacyRevitConnected ? "CONNECTED" : "DISCONNECTED"}\nEXECUTION_TRANSPORT=LEGACY_LOCAL_AGENT\nNote: MCP tools connection is currently unavailable.`;
+        }
       }
     }
 
