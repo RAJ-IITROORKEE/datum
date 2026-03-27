@@ -251,18 +251,30 @@ class MCPClient {
     this.initialized = true;
   }
 
-  private async callRpc(method: string, params: Record<string, unknown>, retriesLeft = 2): Promise<any> {
+  private async callRpc(
+    method: string, 
+    params: Record<string, unknown>, 
+    relayToken?: string,
+    retriesLeft = 2
+  ): Promise<any> {
     await this.ensureInitialized();
     this.debugInfo.lastRpcMethod = method;
 
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      ...this.getAuthHeaders(),
+      ...this.getSessionHeaders(),
+    };
+
+    // Add relay token header if provided
+    if (relayToken) {
+      headers["X-Relay-Token"] = relayToken;
+    }
+
     const response = await fetch(`${this.baseUrl}/mcp`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json, text/event-stream",
-        ...this.getAuthHeaders(),
-        ...this.getSessionHeaders(),
-      },
+      headers,
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: Date.now(),
@@ -278,7 +290,7 @@ class MCPClient {
       if (retriesLeft > 0 && this.shouldRetrySession(response.status, raw)) {
         this.resetSession();
         this.debugInfo.lastRecoveryAt = new Date().toISOString();
-        return this.callRpc(method, params, retriesLeft - 1);
+        return this.callRpc(method, params, relayToken, retriesLeft - 1);
       }
       throw new Error(`MCP RPC failed (${method}): ${response.status}`);
     }
@@ -297,7 +309,7 @@ class MCPClient {
       ) {
         this.resetSession();
         this.debugInfo.lastRecoveryAt = new Date().toISOString();
-        return this.callRpc(method, params, retriesLeft - 1);
+        return this.callRpc(method, params, relayToken, retriesLeft - 1);
       }
       throw new Error(data.error.message || `MCP RPC error: ${method}`);
     }
@@ -377,13 +389,18 @@ class MCPClient {
 
   /**
    * Call a specific MCP tool
+   * @param relayToken Optional relay token for routing to specific Revit instance
    */
-  async callTool(toolName: string, args: Record<string, any>): Promise<MCPToolResult> {
+  async callTool(
+    toolName: string, 
+    args: Record<string, any>,
+    relayToken?: string
+  ): Promise<MCPToolResult> {
     try {
       const result = await this.callRpc("tools/call", {
         name: toolName,
         arguments: args,
-      });
+      }, relayToken);
 
       return {
         success: true,
@@ -400,12 +417,16 @@ class MCPClient {
 
   /**
    * Parse tool calls from LLM response and execute them
+   * @param relayToken Optional relay token for routing
    */
-  async executeToolCalls(toolCalls: MCPToolCall[]): Promise<MCPToolResult[]> {
+  async executeToolCalls(
+    toolCalls: MCPToolCall[],
+    relayToken?: string
+  ): Promise<MCPToolResult[]> {
     const results: MCPToolResult[] = [];
 
     for (const toolCall of toolCalls) {
-      const result = await this.callTool(toolCall.name, toolCall.arguments);
+      const result = await this.callTool(toolCall.name, toolCall.arguments, relayToken);
       results.push(result);
     }
 
