@@ -23,21 +23,71 @@ export class AgentParseError extends Error {
 
 /**
  * Extract JSON from a potentially wrapped response
+ * Uses bracket matching to find valid JSON boundaries
  */
 function extractJson(text: string): string | null {
   // Try to find JSON in code fences first
   const fencedMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fencedMatch?.[1]) {
-    return fencedMatch[1].trim();
+    const content = fencedMatch[1].trim();
+    // Validate it starts with { or [
+    if (content.startsWith("{") || content.startsWith("[")) {
+      return content;
+    }
   }
   
-  // Try to find raw JSON object
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
-    return jsonMatch[0];
+  // Find the first { and try to match brackets to find valid JSON
+  const startIndex = text.indexOf("{");
+  if (startIndex === -1) {
+    return null;
   }
   
-  return null;
+  // Use bracket matching to find the correct end
+  let depth = 0;
+  let inString = false;
+  let escapeNext = false;
+  let endIndex = -1;
+  
+  for (let i = startIndex; i < text.length; i++) {
+    const char = text[i];
+    
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+    
+    if (char === "\\") {
+      escapeNext = true;
+      continue;
+    }
+    
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    
+    if (inString) {
+      continue;
+    }
+    
+    if (char === "{") {
+      depth++;
+    } else if (char === "}") {
+      depth--;
+      if (depth === 0) {
+        endIndex = i;
+        break;
+      }
+    }
+  }
+  
+  if (endIndex === -1) {
+    // Fallback: try simple regex but only for smaller chunks
+    const simpleMatch = text.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/);
+    return simpleMatch ? simpleMatch[0] : null;
+  }
+  
+  return text.slice(startIndex, endIndex + 1);
 }
 
 /**
@@ -147,18 +197,27 @@ export function parsePlanOutput(rawResponse: string, availableToolNames: Set<str
   
   const jsonStr = extractJson(trimmed);
   if (!jsonStr) {
-    throw new AgentParseError("No valid JSON in planning response", rawResponse, true);
+    // Fallback: extract what we can without strict JSON parsing
+    return extractPlanFromText(trimmed, availableToolNames);
   }
   
   let parsed: unknown;
   try {
     parsed = JSON.parse(jsonStr);
   } catch (e) {
-    throw new AgentParseError(
-      `Invalid JSON in planning response: ${e instanceof Error ? e.message : "parse error"}`,
-      rawResponse,
-      true
-    );
+    // Try to fix common JSON issues
+    const fixed = tryFixJson(jsonStr);
+    if (fixed) {
+      try {
+        parsed = JSON.parse(fixed);
+      } catch {
+        // Fall back to text extraction
+        return extractPlanFromText(trimmed, availableToolNames);
+      }
+    } else {
+      // Fall back to text extraction
+      return extractPlanFromText(trimmed, availableToolNames);
+    }
   }
   
   const obj = parsed as Record<string, unknown>;
@@ -193,6 +252,101 @@ export function parsePlanOutput(rawResponse: string, availableToolNames: Set<str
         };
       })
       .filter((step) => availableToolNames.has(step.toolName));
+  }
+  
+  return plan;
+}
+
+/**
+ * Try to fix common JSON issues
+ */
+function tryFixJson(json: string): string | null {
+  let fixed = json;
+  
+  // Remove trailing commas before } or ]
+  fixed = fixed.replace(/,\s*([}\]])/g, "$1");
+  
+  // Fix truncated arrays - add closing bracket
+  const openBrackets = (fixed.match(/\[/g) || []).length;
+  const closeBrackets = (fixed.match(/\]/g) || []).length;
+  if (openBrackets > closeBrackets) {
+    // Find where to truncate - last complete element
+    const lastCompleteIndex = fixed.lastIndexOf("},");
+    if (lastCompleteIndex > 0) {
+      fixed = fixed.slice(0, lastCompleteIndex + 1) + "]" + "}".repeat(openBrackets - closeBrackets - 1);
+    } else {
+      fixed += "]".repeat(openBrackets - closeBrackets);
+    }
+  }
+  
+  // Fix truncated objects - add closing brace
+  const openBraces = (fixed.match(/\{/g) || []).length;
+  const closeBraces = (fixed.match(/\}/g) || []).length;
+  if (openBraces > closeBraces) {
+    fixed += "}".repeat(openBraces - closeBraces);
+  }
+  
+  try {
+    JSON.parse(fixed);
+    return fixed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extract plan information from text when JSON parsing fails
+ */
+function extractPlanFromText(text: string, availableToolNames: Set<string>): AgentPlan {
+  const plan: AgentPlan = {
+    analysis: "Plan extracted from text response",
+    needsMoreInfo: false,
+    steps: [],
+  };
+  
+  // Try to find tool names mentioned in the text
+  const toolsArray = Array.from(availableToolNames);
+  const foundTools: PlannedStep[] = [];
+  
+  for (const toolName of toolsArray) {
+    // Check if tool is mentioned
+    const regex = new RegExp(`\\b${toolName.replace(/_/g, "[_\\s]")}\\b`, "gi");
+    if (regex.test(text)) {
+      foundTools.push({
+        toolName,
+        args: {},
+        description: `Execute ${toolName}`,
+      });
+    }
+  }
+  
+  // Look for common patterns like "1. create_wall" or "- get_levels_list"
+  const stepPattern = /(?:^|\n)\s*(?:\d+[.)]\s*|-\s*|\*\s*)([a-z_]+)/gim;
+  let match;
+  while ((match = stepPattern.exec(text)) !== null) {
+    const potentialTool = match[1].toLowerCase();
+    const resolvedTool = resolveToolAlias(potentialTool, availableToolNames);
+    if (availableToolNames.has(resolvedTool) && !foundTools.some(t => t.toolName === resolvedTool)) {
+      foundTools.push({
+        toolName: resolvedTool,
+        args: {},
+        description: `Execute ${resolvedTool}`,
+      });
+    }
+  }
+  
+  plan.steps = foundTools;
+  
+  // If no steps found, check if it needs clarification
+  if (plan.steps.length === 0) {
+    const questionIndicators = ["?", "could you", "would you", "please provide", "what", "which", "how"];
+    const hasQuestion = questionIndicators.some(q => text.toLowerCase().includes(q));
+    if (hasQuestion) {
+      plan.needsMoreInfo = true;
+      // Extract the question
+      const questionMatch = text.match(/[^.!]*\?/);
+      plan.clarificationQuestion = questionMatch ? questionMatch[0].trim() : "Please provide more details.";
+    }
   }
   
   return plan;

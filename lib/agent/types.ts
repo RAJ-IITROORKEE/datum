@@ -360,7 +360,7 @@ export const DEFAULT_AGENT_CONFIG: AgentConfig = {
   llmTimeoutMs: 30000,
   model: "anthropic/claude-sonnet-4",
   temperature: 0.1,
-  maxTokens: 2000,
+  maxTokens: 4000,
   debug: false,
   allowToolFallback: true,
   retry: {
