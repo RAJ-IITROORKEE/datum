@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Plus_Jakarta_Sans, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "next-themes";
 import { ClerkProvider } from "@clerk/nextjs";
@@ -7,18 +7,18 @@ import { dark, neobrutalism } from "@clerk/themes";
 import { config } from "@/lib/config";
 import { Toaster } from "@/components/ui/sonner";
 import UserSync from "@/components/user-sync";
- 
-//roboto opensans font
 
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+// Professional typography: Plus Jakarta Sans for UI + JetBrains Mono for code
+const plusJakarta = Plus_Jakarta_Sans({
+  variable: "--font-sans",
   subsets: ["latin"],
+  weight: ["300", "400", "500", "600", "700", "800"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const jetbrainsMono = JetBrains_Mono({
+  variable: "--font-mono",
   subsets: ["latin"],
+  weight: ["400", "500", "600"],
 });
 
 export const metadata: Metadata = {
@@ -83,7 +83,7 @@ export default function RootLayout({
       }}
     >
       <html lang="en" suppressHydrationWarning>
-        <body className={`${geistSans.variable} ${geistMono.variable} antialiased`} suppressHydrationWarning>
+        <body className={`${plusJakarta.variable} ${jetbrainsMono.variable} font-sans antialiased`} suppressHydrationWarning>
           <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
             <UserSync />
             {children}

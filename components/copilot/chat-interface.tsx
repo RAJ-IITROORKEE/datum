@@ -12,17 +12,22 @@ import {
   Brain, 
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   Code2,
+  Cpu,
   Loader2,
   PanelLeft, 
-  Pause,
-  Play,
-  Plus, 
   RefreshCw,
+  Sparkles,
   Square,
+  Target,
   Unplug,
   Wrench,
-  Zap 
+  Zap,
+  Activity,
+  CircleDot,
+  Play,
+  Pause
 } from "lucide-react";
 import { ModelSwitcher } from "./model-switcher";
 import { MCPToolsDialog } from "./mcp-tools-dialog";
@@ -73,10 +78,6 @@ function parseMessageContent(content: string): ContentBlock[] {
   
   // Regex to find code blocks: ```language\ncode\n```
   const codeBlockRegex = /```(\w*)\n?([\s\S]*?)```/g;
-  // Regex to find inline JSON objects (starting with { and ending with })
-  const jsonRegex = /(\{[\s\S]*?"[\s\S]*?:[\s\S]*?\})/g;
-  // Regex to find /run commands
-  const commandRegex = /(\/run\s+\w+\s+\{[\s\S]*?\})/g;
   
   let lastIndex = 0;
   let match;
@@ -146,8 +147,8 @@ function MessageContent({ content, isUser }: { content: string; isUser: boolean 
     // Simple render for user messages or messages without code
     return (
       <p className={cn(
-        "wrap-break-word whitespace-pre-wrap text-sm sm:text-base",
-        isUser ? "text-white" : "text-foreground"
+        "wrap-break-word whitespace-pre-wrap text-[15px] leading-relaxed",
+        isUser ? "text-primary-foreground" : "text-foreground"
       )}>
         {content}
       </p>
@@ -159,7 +160,7 @@ function MessageContent({ content, isUser }: { content: string; isUser: boolean 
       {blocks.map((block, index) => {
         if (block.type === "text") {
           return (
-            <p key={index} className="wrap-break-word whitespace-pre-wrap text-sm sm:text-base text-foreground">
+            <p key={index} className="wrap-break-word whitespace-pre-wrap text-[15px] leading-relaxed text-foreground">
               {block.content}
             </p>
           );
@@ -168,15 +169,17 @@ function MessageContent({ content, isUser }: { content: string; isUser: boolean 
         if (block.type === "code" || block.type === "json") {
           return (
             <Collapsible key={index} defaultOpen={false}>
-              <CollapsibleTrigger className="group flex w-full items-center justify-between rounded-md border border-muted-foreground/20 bg-muted/30 px-3 py-2 text-left text-xs font-medium text-muted-foreground hover:bg-muted/50 transition-colors">
+              <CollapsibleTrigger className="group flex w-full items-center justify-between rounded-lg border border-border/60 bg-muted/40 px-3 py-2 text-left text-xs font-medium text-muted-foreground hover:bg-muted/60 transition-all duration-200">
                 <span className="flex items-center gap-2">
-                  <Code2 className="h-3.5 w-3.5" />
-                  {block.type === "json" ? "JSON Output" : `Code (${block.language || "text"})`}
+                  <Code2 className="h-3.5 w-3.5 text-primary/70" />
+                  <span className="font-mono">
+                    {block.type === "json" ? "JSON Output" : `Code (${block.language || "text"})`}
+                  </span>
                 </span>
-                <ChevronDown className="h-3.5 w-3.5 transition-transform group-data-[state=open]:rotate-180" />
+                <ChevronRight className="h-3.5 w-3.5 transition-transform duration-200 group-data-[state=open]:rotate-90" />
               </CollapsibleTrigger>
               <CollapsibleContent className="pt-2">
-                <pre className="overflow-x-auto rounded-md bg-zinc-900 p-3 text-xs text-zinc-100 dark:bg-zinc-950">
+                <pre className="overflow-x-auto rounded-lg bg-[#0d1117] p-4 text-xs leading-relaxed text-[#c9d1d9] font-mono border border-[#30363d]">
                   <code>{block.content}</code>
                 </pre>
               </CollapsibleContent>
@@ -206,8 +209,8 @@ export function ChatInterface({
   const [isLoading, setIsLoading] = useState(false);
   const [model, setModel] = useState("anthropic/claude-sonnet-4.5");
   const [agentEvents, setAgentEvents] = useState<AgentProgressEvent[]>([]);
-  const [analysisOpen, setAnalysisOpen] = useState(false);
-  const [toolsOpen, setToolsOpen] = useState(false);
+  const [planExpanded, setPlanExpanded] = useState(true);
+  const [activityExpanded, setActivityExpanded] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>({
     mcpConnected: false,
     revitConnected: false,
@@ -263,9 +266,9 @@ export function ChatInterface({
             ...prev,
             {
               stage: "error",
-              message: "Connection to Revit Agent lost during execution",
+              message: "Connection to Revit lost during execution",
               kind: "tool",
-              details: "The local Revit Agent disconnected. Ensure Revit is running and the agent terminal is active.",
+              details: "The Revit connection was interrupted. Please ensure Revit is running and the plugin is connected.",
               timestamp: new Date().toISOString(),
             },
           ]);
@@ -328,38 +331,45 @@ export function ChatInterface({
     });
   };
 
-  const getAgentEventDotClassName = (stage: AgentProgressEvent["stage"]): string => {
-    if (stage === "completed") return "bg-green-500 shadow-[0_0_4px_rgba(34,197,94,0.5)]";
-    if (stage === "error") return "bg-red-500 shadow-[0_0_4px_rgba(239,68,68,0.5)]";
-    if (stage === "executing") return "bg-blue-500 shadow-[0_0_4px_rgba(59,130,246,0.5)] animate-pulse";
-    return "bg-blue-500 shadow-[0_0_4px_rgba(59,130,246,0.5)]";
-  };
-
   const getVisibleAgentStatus = (): string => {
     if (agentEvents.length === 0) {
-      return "Thinking through your request and planning execution...";
+      return "Analyzing request and planning execution...";
     }
     return agentEvents.at(-1)?.message ?? "Working...";
   };
 
-  const analysisEvents = agentEvents.filter((event) => event.kind === "analysis");
-  const toolEvents = agentEvents.filter((event) => event.kind === "tool");
+  const toolEvents = agentEvents.filter((event) => event.kind === "tool" || event.kind === "analysis");
   const latestPlan = [...agentEvents].reverse().find((event) => event.kind === "plan" && event.plan)?.plan || [];
 
-  const getPlanStatusDotClass = (status: "pending" | "in_progress" | "completed" | "failed" | "blocked"): string => {
-    if (status === "completed") return "bg-green-500 shadow-[0_0_4px_rgba(34,197,94,0.5)]";
-    if (status === "failed") return "bg-red-500 shadow-[0_0_4px_rgba(239,68,68,0.5)]";
-    if (status === "blocked") return "bg-amber-500 shadow-[0_0_4px_rgba(245,158,11,0.5)]";
-    if (status === "in_progress") return "bg-blue-500 shadow-[0_0_4px_rgba(59,130,246,0.5)] animate-pulse";
-    return "bg-muted-foreground/40";
+  const getStepStatusIcon = (status: "pending" | "in_progress" | "completed" | "failed" | "blocked") => {
+    switch (status) {
+      case "completed":
+        return <CheckCircle2 className="h-4 w-4 text-emerald-500" />;
+      case "failed":
+        return <AlertCircle className="h-4 w-4 text-red-500" />;
+      case "blocked":
+        return <Pause className="h-4 w-4 text-amber-500" />;
+      case "in_progress":
+        return <Loader2 className="h-4 w-4 text-primary animate-spin" />;
+      default:
+        return <CircleDot className="h-4 w-4 text-muted-foreground/50" />;
+    }
   };
-  
-  const getPlanStatusBadgeClass = (status: "pending" | "in_progress" | "completed" | "failed" | "blocked"): string => {
-    if (status === "completed") return "bg-green-500/10 text-green-600 dark:text-green-400 border-green-200 dark:border-green-800";
-    if (status === "failed") return "bg-red-500/10 text-red-600 dark:text-red-400 border-red-200 dark:border-red-800";
-    if (status === "blocked") return "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800";
-    if (status === "in_progress") return "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800";
-    return "bg-muted/50 text-muted-foreground border-muted";
+
+  const getStepStatusBadge = (status: "pending" | "in_progress" | "completed" | "failed" | "blocked") => {
+    const baseClasses = "text-[10px] uppercase tracking-wider font-semibold px-2 py-0.5 rounded-full border";
+    switch (status) {
+      case "completed":
+        return cn(baseClasses, "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20");
+      case "failed":
+        return cn(baseClasses, "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20");
+      case "blocked":
+        return cn(baseClasses, "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20");
+      case "in_progress":
+        return cn(baseClasses, "bg-primary/10 text-primary border-primary/20");
+      default:
+        return cn(baseClasses, "bg-muted/50 text-muted-foreground border-muted");
+    }
   };
 
   const processStreamLine = (
@@ -458,8 +468,8 @@ export function ChatInterface({
     setInput("");
     setIsLoading(true);
     setAgentEvents([]);
-    setAnalysisOpen(false);
-    setToolsOpen(false);
+    setPlanExpanded(true);
+    setActivityExpanded(false);
     setConnectionLostDuringExecution(false);
 
     // Create abort controller for this request
@@ -537,37 +547,45 @@ export function ChatInterface({
     
     if (connectionLostDuringExecution) {
       return (
-        <div className="flex items-center gap-2 rounded-lg bg-red-500/10 px-3 py-1.5 text-xs">
-          <Unplug className="h-3.5 w-3.5 text-red-500" />
-          <span className="font-medium text-red-600 dark:text-red-400">Connection Lost</span>
+        <div className="flex items-center gap-2 rounded-full bg-red-500/10 px-3 py-1.5 text-xs border border-red-500/20">
+          <span className="relative flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-red-500"></span>
+          </span>
+          <span className="font-medium text-red-600 dark:text-red-400">Disconnected</span>
         </div>
       );
     }
     
     if (isFullyConnected) {
       return (
-        <div className="flex items-center gap-2 rounded-lg bg-green-500/10 px-3 py-1.5 text-xs">
-          <Zap className="h-3.5 w-3.5 text-green-500" />
-          <span className="font-medium text-green-600 dark:text-green-400">
-            {connectionStatus.isRelayConnected ? "Cloud Ready" : "Ready"}
+        <div className="flex items-center gap-2 rounded-full bg-emerald-500/10 px-3 py-1.5 text-xs border border-emerald-500/20">
+          <span className="relative flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500"></span>
           </span>
-          <span className="text-muted-foreground">({connectionStatus.toolCount} tools)</span>
+          <span className="font-medium text-emerald-600 dark:text-emerald-400">
+            {connectionStatus.isRelayConnected ? "Cloud Connected" : "Connected"}
+          </span>
+          <span className="text-muted-foreground font-mono text-[10px]">{connectionStatus.toolCount} tools</span>
         </div>
       );
     }
     
     if (isPartiallyConnected) {
       return (
-        <div className="flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-1.5 text-xs">
-          <AlertCircle className="h-3.5 w-3.5 text-amber-500" />
+        <div className="flex items-center gap-2 rounded-full bg-amber-500/10 px-3 py-1.5 text-xs border border-amber-500/20">
+          <span className="relative flex h-2 w-2">
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500"></span>
+          </span>
           <span className="font-medium text-amber-600 dark:text-amber-400">Revit Offline</span>
         </div>
       );
     }
     
     return (
-      <div className="flex items-center gap-2 rounded-lg bg-muted px-3 py-1.5 text-xs">
-        <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+      <div className="flex items-center gap-2 rounded-full bg-muted px-3 py-1.5 text-xs border border-border">
+        <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
         <span className="text-muted-foreground">Connecting...</span>
       </div>
     );
@@ -575,53 +593,70 @@ export function ChatInterface({
 
   return (
     <div className="flex h-full flex-col bg-background">
-      {/* Header with model switcher */}
-      <div className="flex items-center justify-between gap-2 border-b bg-card px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3 md:px-6">
-        <div className="flex min-w-0 items-center gap-1.5 sm:gap-2 md:gap-3">
+      {/* Header */}
+      <header className="flex items-center justify-between gap-3 border-b border-border/60 bg-card/50 backdrop-blur-sm px-4 py-3 md:px-6">
+        <div className="flex min-w-0 items-center gap-3">
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8 shrink-0 md:hidden"
+            className="h-9 w-9 shrink-0 md:hidden rounded-lg"
             onClick={onOpenSidebar}
             aria-label="Open chat history"
           >
             <PanelLeft className="h-5 w-5" />
           </Button>
-          <img src="/fav.png" alt="Datumm" className="h-7 w-auto rounded-full shrink-0 sm:h-8" />
-          <div className="min-w-0 leading-tight">
-            <h1 className="truncate text-sm font-semibold text-card-foreground sm:text-base md:text-lg">Datumm Copilot</h1>
-            <p className="text-[10px] text-blue-600 dark:text-blue-400 sm:text-xs">AI Assistant</p>
+          
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20">
+                <Cpu className="h-5 w-5 text-primary" />
+              </div>
+              {(connectionStatus.revitConnected || connectionStatus.isRelayConnected) && (
+                <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-emerald-500 border-2 border-card" />
+              )}
+            </div>
+            <div className="min-w-0">
+              <h1 className="text-base font-semibold text-foreground tracking-tight">Datum Agent</h1>
+              <p className="text-xs text-muted-foreground">BIM Automation Copilot</p>
+            </div>
           </div>
-          <div className="hidden sm:block">
+          
+          <div className="hidden sm:flex items-center gap-2 ml-2">
             <MCPToolsDialog />
-          </div>
-          <div className="hidden md:block">
             <ConnectionIndicator />
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+        
+        <div className="flex shrink-0 items-center gap-2">
           <div className="hidden sm:block">
             <RevitConnectionMenu />
           </div>
-          <div className="w-32 sm:w-37.5 md:w-50">
+          <div className="w-36 sm:w-44">
             <ModelSwitcher value={model} onValueChange={setModel} />
           </div>
         </div>
-      </div>
+      </header>
 
       {/* Connection Lost Banner */}
       {connectionLostDuringExecution && (
-        <div className="flex items-center justify-between gap-3 border-b border-red-200 bg-red-50 px-4 py-2 dark:border-red-900/40 dark:bg-red-950/20">
-          <div className="flex items-center gap-2">
-            <Unplug className="h-4 w-4 text-red-500" />
-            <span className="text-sm font-medium text-red-700 dark:text-red-400">
-              Connection to Revit Agent lost during execution
-            </span>
+        <div className="flex items-center justify-between gap-3 border-b border-red-500/20 bg-red-500/5 px-4 py-2.5">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-red-500/10">
+              <Unplug className="h-4 w-4 text-red-500" />
+            </div>
+            <div>
+              <span className="text-sm font-medium text-red-700 dark:text-red-400">
+                Connection lost during execution
+              </span>
+              <p className="text-xs text-red-600/70 dark:text-red-400/70">
+                Check if Revit is running and the plugin is connected
+              </p>
+            </div>
           </div>
           <Button
             variant="outline"
             size="sm"
-            className="h-7 gap-1.5 border-red-200 text-red-700 hover:bg-red-100 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"
+            className="h-8 gap-1.5 border-red-500/30 text-red-700 hover:bg-red-500/10 dark:text-red-400"
             onClick={() => {
               setConnectionLostDuringExecution(false);
               checkConnectionStatus();
@@ -634,188 +669,211 @@ export function ChatInterface({
       )}
 
       {/* Messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto">
         {messages.length === 0 ? (
-          <div className="flex h-full items-center justify-center p-4">
-            <div className="text-center">
-              <h2 className="mb-2 text-xl font-bold text-foreground sm:text-2xl">
-                How can I help you today?
+          <div className="flex h-full items-center justify-center p-6">
+            <div className="text-center max-w-md">
+              <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20">
+                <Sparkles className="h-8 w-8 text-primary" />
+              </div>
+              <h2 className="mb-2 text-xl font-semibold text-foreground">
+                Ready to automate Revit
               </h2>
-              <p className="text-sm text-muted-foreground sm:text-base">
-                Start a conversation with AI assistant
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                Describe what you want to build or modify in your Revit model. 
+                I'll plan and execute the steps automatically.
               </p>
+              <div className="mt-6 flex flex-wrap justify-center gap-2">
+                {["Create a 2BHK layout", "Analyze current model", "Add walls and doors"].map((suggestion) => (
+                  <button
+                    key={suggestion}
+                    onClick={() => setInput(suggestion)}
+                    className="rounded-full border border-border/60 bg-card/50 px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+                  >
+                    {suggestion}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         ) : (
-          <div className="mx-auto max-w-3xl space-y-3 sm:space-y-4">
+          <div className="mx-auto max-w-3xl space-y-4 p-4 md:p-6">
             {messages.map((message) => (
               <div
                 key={message.id}
                 className={cn(
-                  "rounded-2xl p-3 sm:p-4",
-                  message.role === "user"
-                    ? "ml-auto max-w-[90%] bg-blue-600 text-white sm:max-w-[85%] md:max-w-[80%]"
-                    : "bg-card border border-blue-100 dark:border-blue-900/40"
+                  "flex gap-3",
+                  message.role === "user" ? "justify-end" : "justify-start"
                 )}
               >
-                <div className="flex gap-2 sm:gap-3">
-                  <div
-                    className={cn(
-                      "flex h-7 w-7 sm:h-8 sm:w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold",
-                      message.role === "user"
-                        ? "bg-blue-700 text-white"
-                        : "bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-200"
-                    )}
-                  >
-                    {message.role === "user" ? "U" : "AI"}
+                {message.role === "assistant" && (
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20">
+                    <Bot className="h-4 w-4 text-primary" />
                   </div>
-                  <div className="flex-1 space-y-2 overflow-hidden">
-                    <MessageContent content={message.content} isUser={message.role === "user"} />
-                  </div>
+                )}
+                
+                <div
+                  className={cn(
+                    "max-w-[85%] rounded-2xl px-4 py-3",
+                    message.role === "user"
+                      ? "bg-primary text-primary-foreground"
+                      : "agent-bubble border border-border/40"
+                  )}
+                >
+                  <MessageContent content={message.content} isUser={message.role === "user"} />
                 </div>
+                
+                {message.role === "user" && (
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 border border-primary/20">
+                    <span className="text-xs font-semibold text-primary">You</span>
+                  </div>
+                )}
               </div>
             ))}
+            
+            {/* Agent Working State */}
             {isLoading && (
-              <div className="rounded-2xl border border-blue-100 bg-card p-3 shadow-sm dark:border-blue-900/40 sm:p-4">
-                <div className="flex gap-2 sm:gap-3">
-                  <div className="flex h-7 w-7 sm:h-8 sm:w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-200">
-                    <Bot className="h-3.5 w-3.5 sm:h-4 sm:w-4 animate-pulse" />
-                  </div>
-                  <div className="flex-1">
-                    <div className="space-y-2 sm:space-y-3">
-                      <div>
-                        <p className="text-xs sm:text-sm font-medium text-foreground">Agent is building your design</p>
-                        <div className="mt-1 flex items-center gap-2 text-xs sm:text-sm text-muted-foreground">
-                          <div className="flex items-center gap-1">
-                            <div className="h-1.5 w-1.5 sm:h-2 sm:w-2 animate-bounce rounded-full bg-blue-500 [animation-delay:-0.3s]"></div>
-                            <div className="h-1.5 w-1.5 sm:h-2 sm:w-2 animate-bounce rounded-full bg-blue-500 [animation-delay:-0.15s]"></div>
-                            <div className="h-1.5 w-1.5 sm:h-2 sm:w-2 animate-bounce rounded-full bg-blue-500"></div>
-                          </div>
-                          <span className="truncate">{getVisibleAgentStatus()}</span>
-                        </div>
+              <div className="flex gap-3">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20">
+                  <Bot className="h-4 w-4 text-primary animate-pulse" />
+                </div>
+                
+                <div className="flex-1 max-w-[85%]">
+                  <div className="agent-bubble agent-thinking rounded-2xl border border-border/40 p-4 space-y-4">
+                    {/* Status Header */}
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-2">
+                        <Activity className="h-4 w-4 text-primary animate-pulse" />
+                        <span className="text-sm font-medium text-foreground">Agent Working</span>
                       </div>
-
-                      <Collapsible defaultOpen>
-                        <CollapsibleTrigger className="group flex w-full items-center justify-between rounded-md border border-blue-100 px-3 py-2 text-left text-xs font-medium text-muted-foreground hover:bg-blue-50/50 dark:border-blue-900/40 dark:hover:bg-blue-900/10">
-                          <span className="flex items-center gap-2">
-                            <Brain className="h-3.5 w-3.5" />
-                            Execution plan ({latestPlan.length} steps)
-                          </span>
-                          <ChevronDown className="h-3.5 w-3.5 transition-transform group-data-[state=open]:rotate-180" />
-                        </CollapsibleTrigger>
-                        <CollapsibleContent className="pt-2">
-                          {latestPlan.length === 0 ? (
-                            <p className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                              Plan will appear once the agent starts execution.
-                            </p>
-                          ) : (
-                            <div className="space-y-2 rounded-md border bg-muted/20 p-2">
-                              {latestPlan.map((step) => (
-                                <div key={step.id} className="rounded-md bg-background border px-2 py-1.5 hover:border-blue-200 dark:hover:border-blue-800 transition-colors">
-                                  <div className="mb-1 flex items-center gap-2 text-[11px]">
-                                    <span className={cn("h-1.5 w-1.5 rounded-full", getPlanStatusDotClass(step.status))} />
-                                    <Badge variant="outline" className={cn("uppercase tracking-wide px-1.5 py-0 text-[10px] font-medium", getPlanStatusBadgeClass(step.status))}>
-                                      {step.status === "in_progress" && <Loader2 className="mr-1 h-2.5 w-2.5 animate-spin" />}
-                                      {step.status === "completed" && <CheckCircle2 className="mr-1 h-2.5 w-2.5" />}
-                                      {step.status === "failed" && <AlertCircle className="mr-1 h-2.5 w-2.5" />}
-                                      {step.status.replace("_", " ")}
-                                    </Badge>
-                                    {step.toolName ? <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-foreground font-mono">{step.toolName}</span> : null}
-                                  </div>
-                                  <p className="text-xs text-foreground font-medium">{step.title}</p>
-                                  {step.reason ? <p className="mt-1 text-[11px] text-muted-foreground italic">{step.reason}</p> : null}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </CollapsibleContent>
-                      </Collapsible>
-
-                      <Collapsible open={analysisOpen} onOpenChange={setAnalysisOpen}>
-                        <CollapsibleTrigger className="group flex w-full items-center justify-between rounded-md border border-blue-100 px-3 py-2 text-left text-xs font-medium text-muted-foreground hover:bg-blue-50/50 dark:border-blue-900/40 dark:hover:bg-blue-900/10">
-                          <span className="flex items-center gap-2">
-                            <Brain className="h-3.5 w-3.5" />
-                            Hidden analysis trace
-                          </span>
-                          <ChevronDown className="h-3.5 w-3.5 transition-transform group-data-[state=open]:rotate-180" />
-                        </CollapsibleTrigger>
-                        <CollapsibleContent className="pt-2">
-                          {analysisEvents.length === 0 ? (
-                            <p className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                              Analysis details will appear here while the agent plans.
-                            </p>
-                          ) : (
-                            <div className="space-y-2 rounded-md border bg-muted/20 p-2">
-                              {analysisEvents.map((event) => (
-                                <div key={`analysis-${event.timestamp ?? event.message}`} className="rounded-md bg-background border px-2 py-1.5 hover:border-purple-200 dark:hover:border-purple-800 transition-colors">
-                                  <div className="mb-1 flex items-center gap-2 text-[11px]">
-                                    <span className={cn("h-1.5 w-1.5 rounded-full", getAgentEventDotClassName(event.stage))} />
-                                    <Badge variant="outline" className={cn(
-                                      "uppercase tracking-wide px-1.5 py-0 text-[10px] font-medium",
-                                      event.stage === "completed" && "bg-green-500/10 text-green-600 dark:text-green-400 border-green-200 dark:border-green-800",
-                                      event.stage === "error" && "bg-red-500/10 text-red-600 dark:text-red-400 border-red-200 dark:border-red-800",
-                                      event.stage === "executing" && "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800",
-                                      event.stage === "planning" && "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800"
-                                    )}>
-                                      {event.stage === "planning" && <Brain className="mr-1 h-2.5 w-2.5" />}
-                                      {event.stage === "executing" && <Loader2 className="mr-1 h-2.5 w-2.5 animate-spin" />}
-                                      {event.stage === "completed" && <CheckCircle2 className="mr-1 h-2.5 w-2.5" />}
-                                      {event.stage === "error" && <AlertCircle className="mr-1 h-2.5 w-2.5" />}
-                                      {event.stage}
-                                    </Badge>
-                                  </div>
-                                  <p className="text-xs text-foreground font-medium">{event.message}</p>
-                                  {event.details ? <pre className="mt-1 overflow-auto rounded bg-muted/50 border p-2 text-[11px] text-muted-foreground">{event.details}</pre> : null}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </CollapsibleContent>
-                      </Collapsible>
-
-                      <Collapsible open={toolsOpen} onOpenChange={setToolsOpen}>
-                        <CollapsibleTrigger className="group flex w-full items-center justify-between rounded-md border border-blue-100 px-3 py-2 text-left text-xs font-medium text-muted-foreground hover:bg-blue-50/50 dark:border-blue-900/40 dark:hover:bg-blue-900/10">
-                          <span className="flex items-center gap-2">
-                            <Wrench className="h-3.5 w-3.5" />
-                            Tool activity ({toolEvents.length})
-                          </span>
-                          <ChevronDown className="h-3.5 w-3.5 transition-transform group-data-[state=open]:rotate-180" />
-                        </CollapsibleTrigger>
-                        <CollapsibleContent className="pt-2">
-                          {toolEvents.length === 0 ? (
-                            <p className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                              Tool execution logs will appear here once commands start running.
-                            </p>
-                          ) : (
-                            <div className="space-y-2 rounded-md border bg-muted/20 p-2">
-                              {toolEvents.map((event) => (
-                                <div key={`tool-${event.timestamp ?? event.message}-${event.toolName ?? "unknown"}`} className="rounded-md bg-background border px-2 py-1.5 hover:border-blue-200 dark:hover:border-blue-800 transition-colors">
-                                  <div className="mb-1 flex items-center gap-2 text-[11px]">
-                                    <span className={cn("h-1.5 w-1.5 rounded-full", getAgentEventDotClassName(event.stage))} />
-                                    <Badge variant="outline" className={cn(
-                                      "uppercase tracking-wide px-1.5 py-0 text-[10px] font-medium",
-                                      event.stage === "completed" && "bg-green-500/10 text-green-600 dark:text-green-400 border-green-200 dark:border-green-800",
-                                      event.stage === "error" && "bg-red-500/10 text-red-600 dark:text-red-400 border-red-200 dark:border-red-800",
-                                      event.stage === "executing" && "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800",
-                                      event.stage === "planning" && "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800"
-                                    )}>
-                                      {event.stage === "executing" && <Loader2 className="mr-1 h-2.5 w-2.5 animate-spin" />}
-                                      {event.stage === "completed" && <CheckCircle2 className="mr-1 h-2.5 w-2.5" />}
-                                      {event.stage === "error" && <AlertCircle className="mr-1 h-2.5 w-2.5" />}
-                                      {event.stage === "planning" && <Brain className="mr-1 h-2.5 w-2.5" />}
-                                      {event.stage}
-                                    </Badge>
-                                    {event.toolName ? <span className="rounded bg-blue-500/10 border border-blue-200 dark:border-blue-800 px-1.5 py-0.5 text-[10px] text-blue-600 dark:text-blue-400 font-mono">{event.toolName}</span> : null}
-                                  </div>
-                                  <p className="text-xs text-foreground font-medium">{event.message}</p>
-                                  {event.details ? <pre className="mt-1 overflow-auto rounded bg-muted/50 p-2 text-[11px] text-muted-foreground border">{event.details}</pre> : null}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </CollapsibleContent>
-                      </Collapsible>
+                      <span className="text-xs text-muted-foreground truncate flex-1">
+                        {getVisibleAgentStatus()}
+                      </span>
                     </div>
+                    
+                    {/* Execution Plan */}
+                    {latestPlan.length > 0 && (
+                      <Collapsible open={planExpanded} onOpenChange={setPlanExpanded}>
+                        <CollapsibleTrigger className="group flex w-full items-center justify-between rounded-lg bg-muted/30 px-3 py-2.5 text-left hover:bg-muted/50 transition-colors">
+                          <div className="flex items-center gap-2">
+                            <Target className="h-4 w-4 text-primary/70" />
+                            <span className="text-sm font-medium text-foreground">Execution Plan</span>
+                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-5">
+                              {latestPlan.filter(s => s.status === "completed").length}/{latestPlan.length}
+                            </Badge>
+                          </div>
+                          <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="pt-3">
+                          <div className="space-y-1">
+                            {latestPlan.map((step, index) => (
+                              <div
+                                key={step.id}
+                                className={cn(
+                                  "flex items-start gap-3 rounded-lg px-3 py-2.5 transition-colors",
+                                  step.status === "in_progress" && "bg-primary/5 border border-primary/20",
+                                  step.status === "completed" && "opacity-70"
+                                )}
+                              >
+                                <div className="mt-0.5">
+                                  {getStepStatusIcon(step.status)}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-xs font-mono text-muted-foreground">
+                                      Step {index + 1}
+                                    </span>
+                                    {step.toolName && (
+                                      <code className="text-[10px] font-mono bg-muted/50 px-1.5 py-0.5 rounded text-primary/80">
+                                        {step.toolName}
+                                      </code>
+                                    )}
+                                    <span className={getStepStatusBadge(step.status)}>
+                                      {step.status.replace("_", " ")}
+                                    </span>
+                                  </div>
+                                  <p className="text-sm text-foreground mt-1">{step.title}</p>
+                                  {step.reason && (
+                                    <p className="text-xs text-muted-foreground mt-1 italic">{step.reason}</p>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </CollapsibleContent>
+                      </Collapsible>
+                    )}
+                    
+                    {/* Tool Activity */}
+                    {toolEvents.length > 0 && (
+                      <Collapsible open={activityExpanded} onOpenChange={setActivityExpanded}>
+                        <CollapsibleTrigger className="group flex w-full items-center justify-between rounded-lg bg-muted/30 px-3 py-2.5 text-left hover:bg-muted/50 transition-colors">
+                          <div className="flex items-center gap-2">
+                            <Wrench className="h-4 w-4 text-primary/70" />
+                            <span className="text-sm font-medium text-foreground">Tool Activity</span>
+                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-5">
+                              {toolEvents.length}
+                            </Badge>
+                          </div>
+                          <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="pt-3">
+                          <div className="space-y-2 max-h-64 overflow-y-auto">
+                            {toolEvents.slice(-10).map((event, idx) => (
+                              <div
+                                key={`${event.timestamp}-${idx}`}
+                                className="rounded-lg border border-border/40 bg-card/50 px-3 py-2"
+                              >
+                                <div className="flex items-center gap-2 mb-1">
+                                  {event.stage === "completed" ? (
+                                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                                  ) : event.stage === "error" ? (
+                                    <AlertCircle className="h-3.5 w-3.5 text-red-500" />
+                                  ) : event.stage === "executing" ? (
+                                    <Loader2 className="h-3.5 w-3.5 text-primary animate-spin" />
+                                  ) : (
+                                    <Brain className="h-3.5 w-3.5 text-primary/70" />
+                                  )}
+                                  {event.toolName && (
+                                    <code className="text-[10px] font-mono bg-muted/50 px-1.5 py-0.5 rounded text-primary/80">
+                                      {event.toolName}
+                                    </code>
+                                  )}
+                                  <span className={cn(
+                                    "text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded-full border",
+                                    event.stage === "completed" && "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20",
+                                    event.stage === "error" && "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20",
+                                    event.stage === "executing" && "bg-primary/10 text-primary border-primary/20",
+                                    event.stage === "planning" && "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20"
+                                  )}>
+                                    {event.stage}
+                                  </span>
+                                </div>
+                                <p className="text-xs text-foreground">{event.message}</p>
+                                {event.details && (
+                                  <pre className="mt-2 text-[10px] text-muted-foreground bg-muted/30 rounded p-2 overflow-x-auto font-mono max-h-24 overflow-y-auto">
+                                    {event.details.slice(0, 500)}
+                                    {event.details.length > 500 && "..."}
+                                  </pre>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </CollapsibleContent>
+                      </Collapsible>
+                    )}
+                    
+                    {/* Loading indicator when no plan yet */}
+                    {latestPlan.length === 0 && (
+                      <div className="flex items-center gap-3 text-muted-foreground">
+                        <div className="flex gap-1">
+                          <span className="h-2 w-2 rounded-full bg-primary animate-bounce [animation-delay:-0.3s]" />
+                          <span className="h-2 w-2 rounded-full bg-primary animate-bounce [animation-delay:-0.15s]" />
+                          <span className="h-2 w-2 rounded-full bg-primary animate-bounce" />
+                        </div>
+                        <span className="text-sm">Planning execution...</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -824,80 +882,83 @@ export function ChatInterface({
         )}
       </div>
 
-      {/* Input */}
-      <div className="mx-auto w-full max-w-3xl p-2 sm:p-3 md:p-4">
-        {/* Queued messages indicator */}
-        {queuedMessages.length > 0 && (
-          <div className="mb-2 flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-400">
-            <Loader2 className="h-3 w-3 animate-spin" />
-            <span>{queuedMessages.length} message{queuedMessages.length > 1 ? "s" : ""} queued</span>
-          </div>
-        )}
-        
-        <form
-          onSubmit={handleSubmit}
-          className="flex flex-col gap-1.5 sm:gap-2 rounded-2xl border border-blue-100 bg-card p-1.5 sm:p-2 shadow-lg dark:border-blue-900/40"
-        >
-          <Textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleSubmit(e);
-              }
-            }}
-            placeholder={isLoading ? "Type to queue your next message..." : "How can I help you today? (Tip: /run get_levels_list {})"}
-            className="min-h-12 sm:min-h-15 w-full resize-none border-0 bg-transparent text-sm sm:text-base text-foreground outline-none focus-visible:ring-0"
-          />
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-1.5 sm:gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-7 w-7 sm:h-8 sm:w-8 rounded-lg"
-              >
-                <Plus className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-              </Button>
-              <span className="text-xs sm:text-sm text-muted-foreground truncate max-w-[100px] sm:max-w-none">
-                {model.split("/")[1]}
+      {/* Input Area */}
+      <div className="border-t border-border/60 bg-card/30 backdrop-blur-sm p-3 md:p-4">
+        <div className="mx-auto max-w-3xl">
+          {/* Queued messages indicator */}
+          {queuedMessages.length > 0 && (
+            <div className="mb-2 flex items-center gap-2 rounded-lg bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-xs">
+              <Loader2 className="h-3 w-3 animate-spin text-amber-500" />
+              <span className="text-amber-600 dark:text-amber-400">
+                {queuedMessages.length} message{queuedMessages.length > 1 ? "s" : ""} queued
               </span>
             </div>
-            <div className="flex items-center gap-2">
-              {isLoading && (
+          )}
+          
+          <form
+            onSubmit={handleSubmit}
+            className="relative rounded-2xl border border-border/60 bg-card shadow-sm focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10 transition-all"
+          >
+            <Textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSubmit(e);
+                }
+              }}
+              placeholder={isLoading ? "Type to queue your next message..." : "Describe what you want to build in Revit..."}
+              className="min-h-[60px] w-full resize-none border-0 bg-transparent px-4 py-3 text-[15px] text-foreground placeholder:text-muted-foreground/60 focus-visible:ring-0 focus-visible:outline-none"
+            />
+            
+            <div className="flex items-center justify-between gap-2 px-3 pb-3">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <kbd className="hidden sm:inline-flex h-5 items-center rounded border border-border bg-muted/50 px-1.5 font-mono text-[10px]">
+                  Enter
+                </kbd>
+                <span className="hidden sm:inline">to send</span>
+                <span className="text-muted-foreground/50">|</span>
+                <span className="font-mono text-[10px] text-muted-foreground/70">
+                  {model.split("/")[1]}
+                </span>
+              </div>
+              
+              <div className="flex items-center gap-2">
+                {isLoading && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-8 w-8 p-0 rounded-lg text-destructive hover:bg-destructive/10"
+                    onClick={handleStop}
+                    title="Stop execution"
+                  >
+                    <Square className="h-4 w-4" />
+                  </Button>
+                )}
                 <Button
-                  type="button"
-                  size="icon"
-                  variant="destructive"
-                  className="h-7 w-7 sm:h-8 sm:w-8 rounded-lg"
-                  onClick={handleStop}
-                  title="Stop execution"
+                  type="submit"
+                  size="sm"
+                  className={cn(
+                    "h-8 w-8 p-0 rounded-lg transition-all",
+                    isLoading
+                      ? "bg-amber-500 hover:bg-amber-600 text-white"
+                      : "bg-primary hover:bg-primary/90 text-primary-foreground"
+                  )}
+                  disabled={!input.trim()}
+                  title={isLoading ? "Queue message" : "Send message"}
                 >
-                  <Square className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
+                  {isLoading ? (
+                    <span className="text-xs font-semibold">+</span>
+                  ) : (
+                    <ArrowUp className="h-4 w-4" />
+                  )}
                 </Button>
-              )}
-              <Button
-                type="submit"
-                size="icon"
-                className={cn(
-                  "h-7 w-7 sm:h-8 sm:w-8 rounded-lg",
-                  isLoading
-                    ? "bg-amber-500 text-white hover:bg-amber-600"
-                    : "bg-blue-600 text-white hover:bg-blue-700"
-                )}
-                disabled={!input.trim()}
-                title={isLoading ? "Queue message" : "Send message"}
-              >
-                {isLoading ? (
-                  <Plus className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-                ) : (
-                  <ArrowUp className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-                )}
-              </Button>
+              </div>
             </div>
-          </div>
-        </form>
+          </form>
+        </div>
       </div>
     </div>
   );
