@@ -4,6 +4,7 @@ import { auth } from "@clerk/nextjs/server";
 import { prisma } from "@/lib/prisma";
 import { getMCPClient } from "@/lib/mcp/client";
 import { enqueueCommandForUser, waitForCommandResult } from "@/lib/revit-agent/jobs";
+import { withMCPRetry, withLLMRetry, withDatabaseRetry } from "@/lib/utils/retry";
 
 // Import new agentic system (with aliases to avoid conflicts)
 import {
@@ -180,24 +181,30 @@ async function executeRevitToolForUser(
   clerkUserId: string,
   toolName: string,
   args: Record<string, unknown>,
-  options?: { preferMcp?: boolean; allowLegacyFallback?: boolean }
+  options?: { preferMcp?: boolean; allowLegacyFallback?: boolean; onRetry?: (attempt: number, error: unknown) => void }
 ): Promise<{ success: true; result: unknown; transport: "mcp" | "legacy" } | { success: false; error: string; transport: "mcp" | "legacy" }> {
   const preferMcp = options?.preferMcp ?? true;
   const allowLegacyFallback = options?.allowLegacyFallback ?? true;
 
   if (preferMcp) {
-    try {
-      // Get relay token for this user
+    // Wrap MCP call in retry logic
+    const mcpAttempt = await withMCPRetry(async () => {
+      // Get relay token for this user (with DB retry)
       let relayToken: string | null = null;
-      try {
+      const tokenResult = await withDatabaseRetry(async () => {
         const tokenRecord = await prisma.revitRelayToken.findUnique({
           where: { clerkUserId },
         });
         if (tokenRecord && new Date() <= tokenRecord.expiresAt) {
-          relayToken = tokenRecord.token;
+          return tokenRecord.token;
         }
-      } catch (e) {
-        console.warn("Failed to fetch relay token:", e);
+        return null;
+      });
+      
+      if (tokenResult.success && tokenResult.result) {
+        relayToken = tokenResult.result;
+      } else if (!tokenResult.success) {
+        console.warn("Failed to fetch relay token after retries:", tokenResult.error);
       }
 
       const mcpClient = getMCPClient();
@@ -205,31 +212,53 @@ async function executeRevitToolForUser(
       const toolError = mcpResult.success ? getToolExecutionError(mcpResult.result) : null;
 
       if (mcpResult.success && !toolError) {
-        return { success: true, result: mcpResult.result, transport: "mcp" };
+        return { success: true, result: mcpResult.result };
       }
 
       const mcpError = toolError || mcpResult.error || `MCP tool call failed for ${toolName}`;
-      if (!allowLegacyFallback) {
-        return { success: false, error: mcpError, transport: "mcp" };
-      }
-    } catch (error) {
-      if (!allowLegacyFallback) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : `MCP tool call failed for ${toolName}`,
-          transport: "mcp",
-        };
-      }
+      throw new Error(mcpError);
+    }, {
+      maxAttempts: 3,
+      initialDelayMs: 1000,
+      onRetry: options?.onRetry,
+    });
+
+    if (mcpAttempt.success && mcpAttempt.result) {
+      return { success: true, result: mcpAttempt.result.result, transport: "mcp" };
+    }
+
+    // If MCP failed and no legacy fallback allowed, return error
+    if (!allowLegacyFallback) {
+      return {
+        success: false,
+        error: mcpAttempt.error instanceof Error ? mcpAttempt.error.message : `MCP tool call failed for ${toolName}`,
+        transport: "mcp",
+      };
     }
   }
 
-  const job = await enqueueCommandForUser(clerkUserId, toolName, args);
-  const result = await waitForCommandResult(job.id);
-  if (result.success) {
-    return { success: true, result: result.result, transport: "legacy" };
+  // Legacy fallback with retry
+  const legacyAttempt = await withDatabaseRetry(async () => {
+    const job = await enqueueCommandForUser(clerkUserId, toolName, args);
+    const result = await waitForCommandResult(job.id);
+    if (result.success) {
+      return result.result;
+    }
+    throw new Error(result.error);
+  }, {
+    maxAttempts: 2,
+    onRetry: options?.onRetry,
+  });
+
+  if (legacyAttempt.success && legacyAttempt.result) {
+    return { success: true, result: legacyAttempt.result, transport: "legacy" };
   }
 
-  return { success: false, error: result.error, transport: "legacy" };
+  return {
+    success: false,
+    error: legacyAttempt.error instanceof Error ? legacyAttempt.error.message : "Legacy tool execution failed",
+    transport: "legacy",
+  };
 }
 
 function safeEnqueue(
@@ -834,14 +863,15 @@ async function generateAgenticPlan(
   userRequest: string,
   toolsList: string,
   context: string,
-  availableToolNames: Set<string>
+  availableToolNames: Set<string>,
+  onRetry?: (attempt: number, error: unknown) => void
 ): Promise<AgenticPlan> {
   const prompt = AGENTIC_PLANNING_PROMPT
     .replace("{TOOLS_LIST}", toolsList)
     .replace("{USER_REQUEST}", userRequest)
     .replace("{CONTEXT}", context || "None");
 
-  try {
+  const llmResult = await withLLMRetry(async () => {
     const response = await openrouter.chat.send({
       chatGenerationParams: {
         model: "anthropic/claude-sonnet-4",
@@ -856,8 +886,7 @@ async function generateAgenticPlan(
     const content = response.choices?.[0]?.message?.content || "";
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      console.error("Agentic planning: No JSON found in response", content);
-      return { analysis: "Failed to parse plan", steps: [], needsMoreInfo: true, clarificationQuestion: "Could you please rephrase your request?" };
+      throw new Error("No JSON found in LLM response");
     }
 
     const parsed = JSON.parse(jsonMatch[0]) as AgenticPlan;
@@ -866,10 +895,24 @@ async function generateAgenticPlan(
     parsed.steps = normalizeAgenticSteps(parsed.steps, availableToolNames);
     
     return parsed;
-  } catch (error) {
-    console.error("Agentic planning error:", error);
-    return { analysis: "Planning failed", steps: [], needsMoreInfo: true, clarificationQuestion: "An error occurred while planning. Please try again." };
+  }, {
+    maxAttempts: 3,
+    initialDelayMs: 1000,
+    onRetry,
+  });
+
+  if (llmResult.success && llmResult.result) {
+    return llmResult.result;
   }
+
+  // Fallback response on failure
+  console.error("Agentic planning error after retries:", llmResult.error);
+  return {
+    analysis: "Planning failed after retries",
+    steps: [],
+    needsMoreInfo: true,
+    clarificationQuestion: "An error occurred while planning. Please try again.",
+  };
 }
 
 interface AgenticContinuation {
@@ -885,7 +928,8 @@ async function determineNextAgenticAction(
   completedSteps: Array<{ step: AgenticPlanStep; result: unknown }>,
   lastResult: unknown,
   remainingSteps: AgenticPlanStep[],
-  toolsList: string
+  toolsList: string,
+  onRetry?: (attempt: number, error: unknown) => void
 ): Promise<AgenticContinuation> {
   const completedSummary = completedSteps.map((s, i) => 
     `Step ${i + 1}: ${s.step.toolName} - ${s.step.description}\nResult: ${JSON.stringify(s.result).slice(0, 500)}`
@@ -902,7 +946,7 @@ async function determineNextAgenticAction(
     .replace("{LAST_RESULT}", JSON.stringify(lastResult).slice(0, 1000))
     .replace("{REMAINING_STEPS}", remainingSummary || "None");
 
-  try {
+  const llmResult = await withLLMRetry(async () => {
     const response = await openrouter.chat.send({
       chatGenerationParams: {
         model: "anthropic/claude-sonnet-4",
@@ -917,15 +961,30 @@ async function determineNextAgenticAction(
     const content = response.choices?.[0]?.message?.content || "";
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      return { action: "error_stop", reasoning: "Failed to parse continuation", nextStep: null, additionalSteps: null, finalSummary: "Could not determine next action" };
+      throw new Error("Failed to parse continuation JSON");
     }
 
     const parsed = JSON.parse(jsonMatch[0]) as AgenticContinuation;
     return parsed;
-  } catch (error) {
-    console.error("Agentic continuation error:", error);
-    return { action: "error_stop", reasoning: "Continuation failed", nextStep: null, additionalSteps: null, finalSummary: "An error occurred during execution" };
+  }, {
+    maxAttempts: 3,
+    initialDelayMs: 1000,
+    onRetry,
+  });
+
+  if (llmResult.success && llmResult.result) {
+    return llmResult.result;
   }
+
+  // Fallback response on failure
+  console.error("Agentic continuation error after retries:", llmResult.error);
+  return {
+    action: "error_stop",
+    reasoning: "Continuation failed after retries",
+    nextStep: null,
+    additionalSteps: null,
+    finalSummary: "An error occurred during execution",
+  };
 }
 
 function requiresAgenticMode(userText: string): boolean {
@@ -2391,7 +2450,29 @@ Failed to connect to Revit tools server. If the user wants to execute Revit oper
               })
             );
 
-            const plan = await generateAgenticPlan(userText, toolsList, contextMessages, availableToolNames);
+            const plan = await generateAgenticPlan(
+              userText,
+              toolsList,
+              contextMessages,
+              availableToolNames,
+              (attempt, error) => {
+                // Emit insight for retry attempt
+                emitAgentProgress(
+                  controller,
+                  encoder,
+                  toAgentEvent({
+                    kind: "insight",
+                    stage: "executing",
+                    message: "Retrying plan generation",
+                    insight: {
+                      type: "warning",
+                      title: `Retry attempt ${attempt}`,
+                      description: error instanceof Error ? error.message : String(error),
+                    },
+                  })
+                );
+              }
+            );
 
             if (plan.needsMoreInfo) {
               // Need clarification from user
@@ -2524,7 +2605,26 @@ Failed to connect to Revit tools server. If the user wants to execute Revit oper
                 }
               }
 
-              const result = await executeRevitToolForUser(userId, resolvedToolName, normalizedArgs);
+              const result = await executeRevitToolForUser(userId, resolvedToolName, normalizedArgs, {
+                onRetry: (attempt, error) => {
+                  // Emit insight for retry attempt
+                  emitAgentProgress(
+                    controller,
+                    encoder,
+                    toAgentEvent({
+                      kind: "insight",
+                      stage: "executing",
+                      message: "Retrying tool execution",
+                      toolName: resolvedToolName,
+                      insight: {
+                        type: "warning",
+                        title: `${resolvedToolName} retry attempt ${attempt}`,
+                        description: error instanceof Error ? error.message : String(error),
+                      },
+                    })
+                  );
+                },
+              });
               const toolError = result.success ? getToolExecutionError(result.result) : null;
 
               if (result.success && !toolError) {
@@ -2570,7 +2670,24 @@ Failed to connect to Revit tools server. If the user wants to execute Revit oper
                     completedSteps,
                     result.result,
                     remainingSteps,
-                    toolsList
+                    toolsList,
+                    (attempt, error) => {
+                      // Emit insight for retry attempt
+                      emitAgentProgress(
+                        controller,
+                        encoder,
+                        toAgentEvent({
+                          kind: "insight",
+                          stage: "executing",
+                          message: "Retrying action determination",
+                          insight: {
+                            type: "warning",
+                            title: `Continuation retry attempt ${attempt}`,
+                            description: error instanceof Error ? error.message : String(error),
+                          },
+                        })
+                      );
+                    }
                   );
 
                   if (continuation.action === "goal_achieved") {
@@ -2650,7 +2767,24 @@ Failed to connect to Revit tools server. If the user wants to execute Revit oper
                   completedSteps,
                   { error: errorMessage },
                   remainingSteps,
-                  toolsList
+                  toolsList,
+                  (attempt, error) => {
+                    // Emit insight for retry attempt
+                    emitAgentProgress(
+                      controller,
+                      encoder,
+                      toAgentEvent({
+                        kind: "insight",
+                        stage: "executing",
+                        message: "Retrying action determination after failure",
+                        insight: {
+                          type: "warning",
+                          title: `Continuation retry attempt ${attempt}`,
+                          description: error instanceof Error ? error.message : String(error),
+                        },
+                      })
+                    );
+                  }
                 );
 
                 if (continuation.action === "error_stop") {
