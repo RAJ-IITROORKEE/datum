@@ -241,6 +241,13 @@ export function ChatInterface({
   const scrollRef = useRef<HTMLDivElement>(null);
   const connectionCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const processingRef = useRef(false);
+  const isLoadingRef = useRef(isLoading);
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    isLoadingRef.current = isLoading;
+  }, [isLoading]);
 
   // Pre-flight connection check before execution
   const performPreflightCheck = useCallback(async (): Promise<boolean> => {
@@ -256,7 +263,16 @@ export function ChatInterface({
     ]);
 
     try {
-      const response = await fetch(`/api/copilot/mcp?t=${Date.now()}`, { cache: "no-store" });
+      // Add 10 second timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+      const response = await fetch(`/api/copilot/mcp?t=${Date.now()}`, { 
+        cache: "no-store",
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
       if (!response.ok) {
         setPreflightStatus("failed");
         setAgentEvents((prev) => [
@@ -341,16 +357,25 @@ export function ChatInterface({
       return true;
     } catch (error) {
       setPreflightStatus("failed");
+      
+      // Check if error is due to timeout
+      const isTimeout = error instanceof Error && error.name === "AbortError";
+      const errorMessage = isTimeout 
+        ? "Connection check timed out after 10 seconds"
+        : (error instanceof Error ? error.message : "Unknown error");
+      
       setAgentEvents((prev) => [
         ...prev,
         {
           stage: "error",
           kind: "preflight",
-          message: `Pre-flight check failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+          message: `Pre-flight check failed: ${errorMessage}`,
           insight: {
             type: "error",
-            title: "Connection Error",
-            description: "An unexpected error occurred while checking the connection. Please try again.",
+            title: isTimeout ? "Connection Timeout" : "Connection Error",
+            description: isTimeout 
+              ? "The connection check took too long. Ensure your network is stable and the MCP server is responding."
+              : "An unexpected error occurred while checking the connection. Please try again.",
           },
           timestamp: new Date().toISOString(),
         },
@@ -442,6 +467,16 @@ export function ChatInterface({
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
+
+  // Cleanup abort controller on unmount
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+    };
+  }, []);
 
   const fetchMessages = async (id: string) => {
     try {
@@ -730,8 +765,8 @@ export function ChatInterface({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    // If loading, queue the message instead of blocking
-    if (isLoading) {
+    // If already processing, queue the message
+    if (processingRef.current || isLoading) {
       if (input.trim()) {
         setQueuedMessages((prev) => [...prev, input.trim()]);
         setInput("");
@@ -740,6 +775,8 @@ export function ChatInterface({
     }
     
     if (!input.trim()) return;
+
+    processingRef.current = true;
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -767,6 +804,7 @@ export function ChatInterface({
       const preflightPassed = await performPreflightCheck();
       if (!preflightPassed) {
         setIsLoading(false);
+        processingRef.current = false;
         // Add error message to the chat
         const errorMessage: Message = {
           id: (Date.now() + 1).toString(),
@@ -827,6 +865,7 @@ export function ChatInterface({
       setConnectionLostDuringExecution(false);
       setPreflightStatus("idle");
       abortControllerRef.current = null;
+      processingRef.current = false;
       
       // Process queued messages if any
       if (queuedMessages.length > 0) {
@@ -985,7 +1024,7 @@ export function ChatInterface({
               </h2>
               <p className="text-sm text-muted-foreground leading-relaxed">
                 Describe what you want to build or modify in your Revit model. 
-                I'll plan and execute the steps automatically.
+                I&apos;ll plan and execute the steps automatically.
               </p>
               <div className="mt-6 flex flex-wrap justify-center gap-2">
                 {["Create a 2BHK layout", "Analyze current model", "Add walls and doors"].map((suggestion) => (

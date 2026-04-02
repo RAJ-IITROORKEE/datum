@@ -232,12 +232,25 @@ async function executeRevitToolForUser(
   return { success: false, error: result.error, transport: "legacy" };
 }
 
+function safeEnqueue(
+  controller: ReadableStreamDefaultController<Uint8Array>,
+  encoder: TextEncoder,
+  data: string
+) {
+  try {
+    controller.enqueue(encoder.encode(data));
+  } catch (error) {
+    console.error("Failed to enqueue SSE data:", error);
+    // Stream may be closed or errored, log but don't throw
+  }
+}
+
 function emitContentChunk(
   controller: ReadableStreamDefaultController<Uint8Array>,
   encoder: TextEncoder,
   content: string
 ) {
-  controller.enqueue(encoder.encode(createSseData({ content })));
+  safeEnqueue(controller, encoder, createSseData({ content }));
 }
 
 function is2BhkBuildIntent(input: string): boolean {
@@ -492,7 +505,7 @@ function emitAgentProgress(
   encoder: TextEncoder,
   event: AgentProgressEvent
 ) {
-  controller.enqueue(encoder.encode(createSseData({ agent: event })));
+  safeEnqueue(controller, encoder, createSseData({ agent: event }));
 }
 
 function buildTodoPlanFromToolCalls(
