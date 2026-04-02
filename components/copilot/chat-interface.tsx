@@ -27,7 +27,14 @@ import {
   Activity,
   CircleDot,
   Play,
-  Pause
+  Pause,
+  ShieldCheck,
+  ShieldAlert,
+  Info,
+  AlertTriangle,
+  FileCheck,
+  XCircle,
+  ListChecks
 } from "lucide-react";
 import { ModelSwitcher } from "./model-switcher";
 import { MCPToolsDialog } from "./mcp-tools-dialog";
@@ -42,12 +49,17 @@ interface Message {
 }
 
 interface AgentProgressEvent {
-  stage: "planning" | "executing" | "completed" | "error";
+  stage: "planning" | "executing" | "completed" | "error" | "preflight";
   message: string;
   toolName?: string;
-  kind?: "analysis" | "tool" | "plan";
+  kind?: "analysis" | "tool" | "plan" | "preflight" | "insight" | "summary";
   details?: string;
   timestamp?: string;
+  insight?: {
+    type: "success" | "warning" | "error" | "info";
+    title: string;
+    description?: string;
+  };
   plan?: Array<{
     id: string;
     title: string;
@@ -64,6 +76,8 @@ interface ConnectionStatus {
   activeDevice: string | null;
   toolCount: number;
   lastChecked: number;
+  preflightChecked?: boolean;
+  preflightPassed?: boolean;
 }
 
 // Parse message content to separate text from code/JSON blocks
@@ -218,12 +232,132 @@ export function ChatInterface({
     activeDevice: null,
     toolCount: 0,
     lastChecked: 0,
+    preflightChecked: false,
+    preflightPassed: false,
   });
   const [connectionLostDuringExecution, setConnectionLostDuringExecution] = useState(false);
+  const [preflightStatus, setPreflightStatus] = useState<"idle" | "checking" | "passed" | "failed">("idle");
   const [queuedMessages, setQueuedMessages] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const connectionCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Pre-flight connection check before execution
+  const performPreflightCheck = useCallback(async (): Promise<boolean> => {
+    setPreflightStatus("checking");
+    setAgentEvents((prev) => [
+      ...prev,
+      {
+        stage: "preflight",
+        kind: "preflight",
+        message: "Running pre-flight connection check...",
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+
+    try {
+      const response = await fetch(`/api/copilot/mcp?t=${Date.now()}`, { cache: "no-store" });
+      if (!response.ok) {
+        setPreflightStatus("failed");
+        setAgentEvents((prev) => [
+          ...prev,
+          {
+            stage: "error",
+            kind: "preflight",
+            message: "Pre-flight check failed: Unable to reach MCP server",
+            insight: {
+              type: "error",
+              title: "Connection Failed",
+              description: "Cannot connect to the MCP server. Check your network connection and try again.",
+            },
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+        return false;
+      }
+
+      const data = await response.json();
+      const isConnected = data.connected && (data.revitConnected || data.isRelayConnected);
+      const hasTools = data.toolCount > 0;
+
+      if (!isConnected) {
+        setPreflightStatus("failed");
+        setAgentEvents((prev) => [
+          ...prev,
+          {
+            stage: "error",
+            kind: "preflight",
+            message: "Pre-flight check failed: Revit not connected",
+            insight: {
+              type: "error",
+              title: "Revit Not Connected",
+              description: "Please ensure Revit is running with the Datum plugin connected via Cloud Relay.",
+            },
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+        return false;
+      }
+
+      if (!hasTools) {
+        setPreflightStatus("failed");
+        setAgentEvents((prev) => [
+          ...prev,
+          {
+            stage: "error",
+            kind: "preflight",
+            message: "Pre-flight check failed: No tools available",
+            insight: {
+              type: "warning",
+              title: "No Tools Available",
+              description: "The MCP server is connected but no tools are available. Check the Revit plugin status.",
+            },
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+        return false;
+      }
+
+      setPreflightStatus("passed");
+      setConnectionStatus((prev) => ({
+        ...prev,
+        preflightChecked: true,
+        preflightPassed: true,
+      }));
+      setAgentEvents((prev) => [
+        ...prev,
+        {
+          stage: "preflight",
+          kind: "preflight",
+          message: `Pre-flight check passed: ${data.toolCount} tools available`,
+          insight: {
+            type: "success",
+            title: "Connection Verified",
+            description: `Ready to execute with ${data.toolCount} Revit tools via ${data.revitConnectionType === "relay" ? "Cloud Relay" : "Local Agent"}.`,
+          },
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+      return true;
+    } catch (error) {
+      setPreflightStatus("failed");
+      setAgentEvents((prev) => [
+        ...prev,
+        {
+          stage: "error",
+          kind: "preflight",
+          message: `Pre-flight check failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+          insight: {
+            type: "error",
+            title: "Connection Error",
+            description: "An unexpected error occurred while checking the connection. Please try again.",
+          },
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+      return false;
+    }
+  }, []);
 
   // Stop the current agent execution
   const handleStop = useCallback(() => {
@@ -340,6 +474,23 @@ export function ChatInterface({
 
   const toolEvents = agentEvents.filter((event) => event.kind === "tool" || event.kind === "analysis");
   const latestPlan = [...agentEvents].reverse().find((event) => event.kind === "plan" && event.plan)?.plan || [];
+  const preflightEvents = agentEvents.filter((event) => event.kind === "preflight");
+  const insightEvents = agentEvents.filter((event) => event.insight);
+  const failedSteps = latestPlan.filter((step) => step.status === "failed");
+  const completedSteps = latestPlan.filter((step) => step.status === "completed");
+
+  // Get summary of execution
+  const getExecutionSummary = () => {
+    if (latestPlan.length === 0) return null;
+    const completed = latestPlan.filter((s) => s.status === "completed").length;
+    const failed = latestPlan.filter((s) => s.status === "failed").length;
+    const pending = latestPlan.filter((s) => s.status === "pending").length;
+    const inProgress = latestPlan.filter((s) => s.status === "in_progress").length;
+    
+    return { completed, failed, pending, inProgress, total: latestPlan.length };
+  };
+
+  const executionSummary = getExecutionSummary();
 
   const getStepStatusIcon = (status: "pending" | "in_progress" | "completed" | "failed" | "blocked") => {
     switch (status) {
@@ -370,6 +521,138 @@ export function ChatInterface({
       default:
         return cn(baseClasses, "bg-muted/50 text-muted-foreground border-muted");
     }
+  };
+
+  // Insight Card Component for displaying insights, warnings, errors
+  const InsightCard = ({ insight }: { insight: { type: "success" | "warning" | "error" | "info"; title: string; description?: string } }) => {
+    const iconMap = {
+      success: <CheckCircle2 className="h-4 w-4 text-emerald-500" />,
+      warning: <AlertTriangle className="h-4 w-4 text-amber-500" />,
+      error: <XCircle className="h-4 w-4 text-red-500" />,
+      info: <Info className="h-4 w-4 text-blue-500" />,
+    };
+    
+    const bgMap = {
+      success: "bg-emerald-500/5 border-emerald-500/20",
+      warning: "bg-amber-500/5 border-amber-500/20",
+      error: "bg-red-500/5 border-red-500/20",
+      info: "bg-blue-500/5 border-blue-500/20",
+    };
+    
+    const titleColorMap = {
+      success: "text-emerald-700 dark:text-emerald-400",
+      warning: "text-amber-700 dark:text-amber-400",
+      error: "text-red-700 dark:text-red-400",
+      info: "text-blue-700 dark:text-blue-400",
+    };
+    
+    return (
+      <div className={cn("rounded-lg border p-3", bgMap[insight.type])}>
+        <div className="flex items-start gap-2">
+          {iconMap[insight.type]}
+          <div className="flex-1 min-w-0">
+            <p className={cn("text-sm font-medium", titleColorMap[insight.type])}>
+              {insight.title}
+            </p>
+            {insight.description && (
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {insight.description}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Execution Summary Component
+  const ExecutionSummaryCard = () => {
+    if (!executionSummary || executionSummary.total === 0) return null;
+    
+    const allCompleted = executionSummary.completed === executionSummary.total;
+    const hasFailed = executionSummary.failed > 0;
+    
+    return (
+      <div className={cn(
+        "rounded-lg border p-3",
+        allCompleted && !hasFailed && "bg-emerald-500/5 border-emerald-500/20",
+        hasFailed && "bg-amber-500/5 border-amber-500/20",
+        !allCompleted && !hasFailed && "bg-muted/30 border-border/40"
+      )}>
+        <div className="flex items-center gap-2 mb-2">
+          <ListChecks className={cn(
+            "h-4 w-4",
+            allCompleted && !hasFailed && "text-emerald-500",
+            hasFailed && "text-amber-500",
+            !allCompleted && !hasFailed && "text-primary"
+          )} />
+          <span className="text-sm font-medium text-foreground">Execution Summary</span>
+        </div>
+        <div className="flex items-center gap-3 text-xs">
+          <div className="flex items-center gap-1">
+            <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+            <span className="text-muted-foreground">{executionSummary.completed} completed</span>
+          </div>
+          {executionSummary.failed > 0 && (
+            <div className="flex items-center gap-1">
+              <XCircle className="h-3 w-3 text-red-500" />
+              <span className="text-muted-foreground">{executionSummary.failed} failed</span>
+            </div>
+          )}
+          {executionSummary.pending > 0 && (
+            <div className="flex items-center gap-1">
+              <CircleDot className="h-3 w-3 text-muted-foreground/50" />
+              <span className="text-muted-foreground">{executionSummary.pending} pending</span>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  // Failed Steps Summary
+  const FailedStepsSummary = () => {
+    if (failedSteps.length === 0) return null;
+    
+    return (
+      <Collapsible defaultOpen={true}>
+        <CollapsibleTrigger className="group flex w-full items-center justify-between rounded-lg bg-red-500/5 border border-red-500/20 px-3 py-2.5 text-left hover:bg-red-500/10 transition-colors">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 text-red-500" />
+            <span className="text-sm font-medium text-red-700 dark:text-red-400">Failed Steps</span>
+            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-5 bg-red-500/10 text-red-600 border-red-500/20">
+              {failedSteps.length}
+            </Badge>
+          </div>
+          <ChevronDown className="h-4 w-4 text-red-500/70 transition-transform group-data-[state=open]:rotate-180" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="pt-2">
+          <div className="space-y-2">
+            {failedSteps.map((step) => (
+              <div
+                key={step.id}
+                className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2"
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <XCircle className="h-3.5 w-3.5 text-red-500" />
+                  {step.toolName && (
+                    <code className="text-[10px] font-mono bg-red-500/10 px-1.5 py-0.5 rounded text-red-600 dark:text-red-400">
+                      {step.toolName}
+                    </code>
+                  )}
+                </div>
+                <p className="text-sm text-foreground">{step.title}</p>
+                {step.reason && (
+                  <p className="text-xs text-red-600/80 dark:text-red-400/80 mt-1 font-mono bg-red-500/5 rounded px-2 py-1">
+                    {step.reason}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+    );
   };
 
   const processStreamLine = (
@@ -471,9 +754,29 @@ export function ChatInterface({
     setPlanExpanded(true);
     setActivityExpanded(false);
     setConnectionLostDuringExecution(false);
+    setPreflightStatus("idle");
 
     // Create abort controller for this request
     abortControllerRef.current = new AbortController();
+
+    // Perform pre-flight connection check for build/execute requests
+    const isBuildRequest = /\b(create|build|make|add|place|design|construct|generate)\b/i.test(input.trim()) &&
+      /\b(wall|floor|room|door|window|house|layout|bhk|bedroom)\b/i.test(input.trim());
+    
+    if (isBuildRequest) {
+      const preflightPassed = await performPreflightCheck();
+      if (!preflightPassed) {
+        setIsLoading(false);
+        // Add error message to the chat
+        const errorMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: "I cannot execute this request because the pre-flight connection check failed. Please ensure Revit is running with the Datum plugin connected, then try again.",
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+        return;
+      }
+    }
 
     try {
       const allMessages = [...messages, userMessage].map((msg) => ({
@@ -522,6 +825,7 @@ export function ChatInterface({
     } finally {
       setIsLoading(false);
       setConnectionLostDuringExecution(false);
+      setPreflightStatus("idle");
       abortControllerRef.current = null;
       
       // Process queued messages if any
@@ -743,13 +1047,39 @@ export function ChatInterface({
                     {/* Status Header */}
                     <div className="flex items-center gap-3">
                       <div className="flex items-center gap-2">
-                        <Activity className="h-4 w-4 text-primary animate-pulse" />
-                        <span className="text-sm font-medium text-foreground">Agent Working</span>
+                        {preflightStatus === "checking" ? (
+                          <ShieldCheck className="h-4 w-4 text-primary animate-pulse" />
+                        ) : preflightStatus === "failed" ? (
+                          <ShieldAlert className="h-4 w-4 text-red-500" />
+                        ) : (
+                          <Activity className="h-4 w-4 text-primary animate-pulse" />
+                        )}
+                        <span className="text-sm font-medium text-foreground">
+                          {preflightStatus === "checking" ? "Pre-flight Check" : 
+                           preflightStatus === "failed" ? "Connection Failed" : "Agent Working"}
+                        </span>
                       </div>
                       <span className="text-xs text-muted-foreground truncate flex-1">
                         {getVisibleAgentStatus()}
                       </span>
                     </div>
+
+                    {/* Insights Section - Show important insights prominently */}
+                    {insightEvents.length > 0 && (
+                      <div className="space-y-2">
+                        {insightEvents.slice(-3).map((event, idx) => (
+                          event.insight && <InsightCard key={`insight-${idx}`} insight={event.insight} />
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Execution Summary - Show when we have completed steps */}
+                    {executionSummary && executionSummary.completed > 0 && (
+                      <ExecutionSummaryCard />
+                    )}
+
+                    {/* Failed Steps - Show prominently if any */}
+                    <FailedStepsSummary />
                     
                     {/* Execution Plan */}
                     {latestPlan.length > 0 && (
@@ -772,7 +1102,8 @@ export function ChatInterface({
                                 className={cn(
                                   "flex items-start gap-3 rounded-lg px-3 py-2.5 transition-colors",
                                   step.status === "in_progress" && "bg-primary/5 border border-primary/20",
-                                  step.status === "completed" && "opacity-70"
+                                  step.status === "completed" && "opacity-70",
+                                  step.status === "failed" && "bg-red-500/5 border border-red-500/20"
                                 )}
                               >
                                 <div className="mt-0.5">
@@ -794,7 +1125,7 @@ export function ChatInterface({
                                   </div>
                                   <p className="text-sm text-foreground mt-1">{step.title}</p>
                                   {step.reason && (
-                                    <p className="text-xs text-muted-foreground mt-1 italic">{step.reason}</p>
+                                    <p className="text-xs text-red-600/80 dark:text-red-400/80 mt-1 italic">{step.reason}</p>
                                   )}
                                 </div>
                               </div>
@@ -804,13 +1135,13 @@ export function ChatInterface({
                       </Collapsible>
                     )}
                     
-                    {/* Tool Activity */}
+                    {/* Tool Activity - Hidden in accordion by default */}
                     {toolEvents.length > 0 && (
                       <Collapsible open={activityExpanded} onOpenChange={setActivityExpanded}>
                         <CollapsibleTrigger className="group flex w-full items-center justify-between rounded-lg bg-muted/30 px-3 py-2.5 text-left hover:bg-muted/50 transition-colors">
                           <div className="flex items-center gap-2">
                             <Wrench className="h-4 w-4 text-primary/70" />
-                            <span className="text-sm font-medium text-foreground">Tool Activity</span>
+                            <span className="text-sm font-medium text-foreground">Tool Activity Log</span>
                             <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-5">
                               {toolEvents.length}
                             </Badge>
@@ -851,10 +1182,19 @@ export function ChatInterface({
                                 </div>
                                 <p className="text-xs text-foreground">{event.message}</p>
                                 {event.details && (
-                                  <pre className="mt-2 text-[10px] text-muted-foreground bg-muted/30 rounded p-2 overflow-x-auto font-mono max-h-24 overflow-y-auto">
-                                    {event.details.slice(0, 500)}
-                                    {event.details.length > 500 && "..."}
-                                  </pre>
+                                  <Collapsible>
+                                    <CollapsibleTrigger className="text-[10px] text-primary/70 hover:text-primary mt-1 flex items-center gap-1">
+                                      <Code2 className="h-3 w-3" />
+                                      <span>View Details</span>
+                                      <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
+                                    </CollapsibleTrigger>
+                                    <CollapsibleContent>
+                                      <pre className="mt-2 text-[10px] text-muted-foreground bg-muted/30 rounded p-2 overflow-x-auto font-mono max-h-24 overflow-y-auto">
+                                        {event.details.slice(0, 500)}
+                                        {event.details.length > 500 && "..."}
+                                      </pre>
+                                    </CollapsibleContent>
+                                  </Collapsible>
                                 )}
                               </div>
                             ))}
@@ -864,14 +1204,16 @@ export function ChatInterface({
                     )}
                     
                     {/* Loading indicator when no plan yet */}
-                    {latestPlan.length === 0 && (
+                    {latestPlan.length === 0 && preflightStatus !== "failed" && (
                       <div className="flex items-center gap-3 text-muted-foreground">
                         <div className="flex gap-1">
                           <span className="h-2 w-2 rounded-full bg-primary animate-bounce [animation-delay:-0.3s]" />
                           <span className="h-2 w-2 rounded-full bg-primary animate-bounce [animation-delay:-0.15s]" />
                           <span className="h-2 w-2 rounded-full bg-primary animate-bounce" />
                         </div>
-                        <span className="text-sm">Planning execution...</span>
+                        <span className="text-sm">
+                          {preflightStatus === "checking" ? "Verifying connection..." : "Planning execution..."}
+                        </span>
                       </div>
                     )}
                   </div>

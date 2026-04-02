@@ -57,15 +57,53 @@ export function createSseStream(): {
     
     sendProgress(event: AgentProgressEvent) {
       // Convert to the format expected by the frontend
+      // Map event types to frontend kinds
+      let kind: "analysis" | "tool" | "plan" | "preflight" | "insight" | "summary";
+      switch (event.type) {
+        case "executing":
+          kind = "tool";
+          break;
+        case "planning":
+        case "thinking":
+          kind = "analysis";
+          break;
+        case "observation":
+          kind = "tool";
+          break;
+        case "completed":
+          kind = "plan";
+          break;
+        case "error":
+          kind = "tool";
+          break;
+        default:
+          kind = "plan";
+      }
+
+      // Build insight if step has error
+      let insight: { type: "success" | "warning" | "error" | "info"; title: string; description?: string } | undefined;
+      if (event.type === "completed" && !event.error) {
+        insight = {
+          type: "success",
+          title: event.step?.toolName ? `${event.step.toolName} Completed` : "Step Completed",
+          description: event.message,
+        };
+      } else if (event.type === "error" || event.error) {
+        insight = {
+          type: "error",
+          title: event.step?.toolName ? `${event.step.toolName} Failed` : "Step Failed",
+          description: event.error || event.message,
+        };
+      }
+
       const frontendEvent = {
         stage: event.stage,
         message: event.message,
-        kind: event.type === "executing" ? "tool" : 
-              event.type === "planning" ? "analysis" : 
-              event.type === "thinking" ? "analysis" : "plan",
+        kind,
         toolName: event.step?.toolName,
         details: event.observation,
         plan: event.plan,
+        insight,
         timestamp: event.timestamp,
       };
       
@@ -87,6 +125,11 @@ export function createSseStream(): {
           stage: "error",
           message,
           kind: "analysis",
+          insight: {
+            type: "error",
+            title: "Execution Error",
+            description: message,
+          },
           timestamp: new Date().toISOString(),
         }
       })));

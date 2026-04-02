@@ -80,6 +80,7 @@ export async function GET() {
       tools,
       toolCount: tools.length,
       revitConnected,
+      isRelayConnected: relayRevitConnected,
       revitConnectionType: relayRevitConnected ? "relay" : legacyRevitConnected ? "legacy" : null,
       activeDevice: recentSession?.deviceName || null,
       reason,

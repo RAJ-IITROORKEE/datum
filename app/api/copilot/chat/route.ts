@@ -41,10 +41,16 @@ function isStatusIntent(input: string): boolean {
   return checks.some((c) => text.includes(c));
 }
 
-type AgentStage = "planning" | "executing" | "completed" | "error";
-type AgentEventKind = "analysis" | "tool" | "plan";
+type AgentStage = "planning" | "executing" | "completed" | "error" | "preflight";
+type AgentEventKind = "analysis" | "tool" | "plan" | "preflight" | "insight" | "summary";
 
 type AgentTodoStepStatus = "pending" | "in_progress" | "completed" | "failed" | "blocked";
+
+interface AgentInsight {
+  type: "success" | "warning" | "error" | "info";
+  title: string;
+  description?: string;
+}
 
 interface AgentTodoStep {
   id: string;
@@ -61,6 +67,7 @@ interface AgentProgressEvent {
   kind: AgentEventKind;
   details?: string;
   plan?: AgentTodoStep[];
+  insight?: AgentInsight;
   timestamp: string;
 }
 
@@ -543,6 +550,26 @@ function toAgentEvent(
     ...event,
     timestamp: new Date().toISOString(),
   };
+}
+
+function emitInsight(
+  controller: ReadableStreamDefaultController<Uint8Array>,
+  encoder: TextEncoder,
+  type: "success" | "warning" | "error" | "info",
+  title: string,
+  description?: string,
+  stage: AgentStage = type === "error" ? "error" : "completed"
+) {
+  emitAgentProgress(
+    controller,
+    encoder,
+    toAgentEvent({
+      kind: "insight",
+      stage,
+      message: title,
+      insight: { type, title, description },
+    })
+  );
 }
 
 function summarizeForDetails(value: unknown, maxLength = 1400): string {
@@ -2366,6 +2393,11 @@ Failed to connect to Revit tools server. If the user wants to execute Revit oper
                 kind: "analysis",
                 stage: "planning",
                 message: "Analyzing request and generating execution plan...",
+                insight: {
+                  type: "info",
+                  title: "Planning Started",
+                  description: "Analyzing your request to create an optimal execution plan.",
+                },
               })
             );
 
@@ -2522,6 +2554,11 @@ Failed to connect to Revit tools server. If the user wants to execute Revit oper
                     message: `${currentStep.toolName} completed successfully via ${result.transport.toUpperCase()}`,
                     toolName: currentStep.toolName,
                     details: summarizeForDetails(result.result, 500),
+                    insight: {
+                      type: "success",
+                      title: `${currentStep.toolName} Executed`,
+                      description: currentStep.description,
+                    },
                   })
                 );
 
@@ -2609,6 +2646,11 @@ Failed to connect to Revit tools server. If the user wants to execute Revit oper
                     message: `${currentStep.toolName} failed via ${result.transport.toUpperCase()}: ${errorMessage}`,
                     toolName: currentStep.toolName,
                     details: summarizeForDetails({ error: errorMessage }),
+                    insight: {
+                      type: "error",
+                      title: `${currentStep.toolName} Failed`,
+                      description: errorMessage,
+                    },
                   })
                 );
 
@@ -2663,14 +2705,26 @@ Failed to connect to Revit tools server. If the user wants to execute Revit oper
               finalResponse = `Agentic execution completed.\n\n**Summary:**\n- Steps executed: ${completedSteps.length}\n- Successful: ${successCount}\n- Failed: ${failCount}\n\n${formatToolOutcomeSummary(toolOutcomes)}`;
             }
 
+            const hasFailures = toolOutcomes.some((o) => o.status === "failed");
             emitAgentProgress(
               controller,
               encoder,
               toAgentEvent({
                 kind: "plan",
-                stage: toolOutcomes.some((o) => o.status === "failed") ? "error" : "completed",
+                stage: hasFailures ? "error" : "completed",
                 message: "Execution plan finished",
                 plan: cloneTodoPlan(todoPlan),
+                insight: hasFailures
+                  ? {
+                      type: "warning",
+                      title: "Execution Completed with Issues",
+                      description: `${toolOutcomes.filter((o) => o.status === "failed").length} step(s) failed. Review the details above.`,
+                    }
+                  : {
+                      type: "success",
+                      title: "Execution Completed Successfully",
+                      description: `All ${completedSteps.length} steps completed without errors.`,
+                    },
               })
             );
 
