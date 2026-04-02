@@ -8,9 +8,7 @@ import { enqueueCommandForUser, waitForCommandResult } from "@/lib/revit-agent/j
 // Import new agentic system (with aliases to avoid conflicts)
 import {
   runAgentWithPlanning,
-  fetchAvailableTools,
   createSseStream as createAgentSseStream,
-  createSseData as createAgentSseData,
   SSE_HEADERS,
   createLogger,
   AgentProgressEvent as NewAgentProgressEvent,
@@ -550,26 +548,6 @@ function toAgentEvent(
     ...event,
     timestamp: new Date().toISOString(),
   };
-}
-
-function emitInsight(
-  controller: ReadableStreamDefaultController<Uint8Array>,
-  encoder: TextEncoder,
-  type: "success" | "warning" | "error" | "info",
-  title: string,
-  description?: string,
-  stage: AgentStage = type === "error" ? "error" : "completed"
-) {
-  emitAgentProgress(
-    controller,
-    encoder,
-    toAgentEvent({
-      kind: "insight",
-      stage,
-      message: title,
-      insight: { type, title, description },
-    })
-  );
 }
 
 function summarizeForDetails(value: unknown, maxLength = 1400): string {
@@ -1490,7 +1468,6 @@ Failed to connect to Revit tools server. If the user wants to execute Revit oper
     if (isStatusIntent(userText)) {
       const mcpServerText = mcpConnected ? "Connected" : "Disconnected";
       const mcpCatalogText = mcpCatalogAvailable ? `Available (${mcpToolCount} tools)` : "Unavailable";
-      const revitAgentText = revitConnected ? "Connected" : "Disconnected";
       const directRunText = revitConnected ? "Available" : "Unavailable";
       const deviceSuffix = recentAgentSession?.deviceName ? ` (${recentAgentSession.deviceName})` : "";
       const mcpReasonLine = mcpReason ? `\n- MCP Reason: ${mcpReason}` : "";

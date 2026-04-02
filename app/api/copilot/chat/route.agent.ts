@@ -8,9 +8,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { prisma } from "@/lib/prisma";
-import { getMCPClient } from "@/lib/mcp/client";
 import {
-  runAgent,
   runAgentWithPlanning,
   fetchAvailableTools,
   createSseStream,
@@ -19,7 +17,6 @@ import {
   createLogger,
   AgentProgressEvent,
   AgentTool,
-  DEFAULT_AGENT_CONFIG,
 } from "@/lib/agent";
 import { OpenRouter } from "@openrouter/sdk";
 
@@ -237,8 +234,7 @@ export async function POST(req: NextRequest) {
       return handleManualToolCommand(
         userId, 
         userText, 
-        conversation.id, 
-        connections
+        conversation.id
       );
     }
     
@@ -293,8 +289,7 @@ export async function POST(req: NextRequest) {
 async function handleManualToolCommand(
   userId: string,
   userText: string,
-  conversationId: string,
-  connections: Awaited<ReturnType<typeof checkConnections>>
+  conversationId: string
 ): Promise<Response> {
   const parts = userText.slice("/run".length).trim();
   const spaceIndex = parts.indexOf(" ");
